@@ -13,6 +13,7 @@ The SecretStore handles encryption/decryption; models only hold opaque aliases o
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
@@ -38,6 +39,30 @@ class ServerType(str, Enum):
     artifact = "artifact"
     github = "github"      # future
     rag = "rag"            # future
+    other = "other"        # user-defined / custom
+
+
+class TransportType(str, Enum):
+    """
+    How Multi-MCP connects to the sub-server.
+
+    - stdio:     Launch a child process, communicate over stdin/stdout (MCP spec default)
+    - http:      Connect to an already-running HTTP/SSE server
+    - websocket: Connect to a WebSocket server
+    - builtin:   Python-native adapter bundled in Multi-MCP (no external process)
+    """
+    stdio = "stdio"
+    http = "http"
+    websocket = "websocket"
+    builtin = "builtin"
+
+
+class DiscoveryStatus(str, Enum):
+    """Result of the last tools/list discovery attempt."""
+    pending = "pending"         # never attempted
+    ok = "ok"                   # succeeded
+    error = "error"             # last attempt failed
+    disabled = "disabled"       # server is disabled, discovery skipped
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +197,32 @@ class ServerPolicy(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Discovery cache — result of tools/list call
+# ---------------------------------------------------------------------------
+
+class DiscoveredTool(BaseModel):
+    """A single tool discovered from a sub-server's tools/list response."""
+    name: str
+    description: str = ""
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+
+
+class DiscoveryCache(BaseModel):
+    """
+    Cached result of the last tools/list discovery for a sub-server.
+    Stored alongside the SubServerConfig; never contains secrets.
+    """
+    status: DiscoveryStatus = DiscoveryStatus.pending
+    tools: list[DiscoveredTool] = Field(default_factory=list)
+    last_attempted_at: datetime | None = None
+    last_succeeded_at: datetime | None = None
+    error_message: str | None = None
+
+    def tool_names(self) -> list[str]:
+        return [t.name for t in self.tools]
+
+
+# ---------------------------------------------------------------------------
 # Sub-server adapter protocol
 # ---------------------------------------------------------------------------
 
@@ -184,30 +235,67 @@ class SubServerAdapter(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Sub-server configuration
+# Sub-server configuration (extended)
 # ---------------------------------------------------------------------------
 
 class SubServerConfig(BaseModel):
-    name: str
-    server_type: ServerType
+    """
+    Full configuration for a registered MCP sub-server.
+
+    Transport options:
+      - stdio:     command is the shell command to launch the process
+      - http:      endpoint is the base URL (e.g. http://localhost:3001)
+      - websocket: endpoint is the ws:// URL
+      - builtin:   no command/endpoint needed; adapter is instantiated by HubFactory
+    """
+    name: str = Field(description="Unique identifier for this sub-server (e.g. 'filesystem-main')")
+    server_type: ServerType = Field(description="Functional category of this server")
+    transport: TransportType = Field(
+        default=TransportType.builtin,
+        description="How Multi-MCP connects to this server.",
+    )
     command: str | None = Field(
         default=None,
-        description="Shell command to launch the sub-server process (for local stdio servers).",
+        description="Shell command to launch the sub-server (stdio transport only).",
     )
-    address: str | None = Field(
+    endpoint: str | None = Field(
         default=None,
-        description="HTTP/SSE address for remote sub-servers.",
+        description="HTTP/WebSocket URL for remote sub-servers.",
     )
-    enabled: bool = True
+    env_scope: list[str] = Field(
+        default_factory=lambda: ["dev", "stage", "prod"],
+        description="Environments where this server is active.",
+    )
+    enabled: bool = Field(default=True)
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Free-form tags for filtering/grouping (e.g. ['read-only', 'unity', 'local']).",
+    )
+    description: str = Field(default="", description="Human-readable description.")
+    version_pin: str | None = Field(
+        default=None,
+        description="Version or git commit hash to pin (for reproducibility).",
+    )
     exposed_tools: list[str] = Field(
         default_factory=list,
-        description="Tools from this server that are exposed to clients.",
+        description="Tools from this server that are exposed to clients. "
+                    "If empty, all discovered tools are exposed.",
     )
     allowed_profiles: list[str] = Field(
         default_factory=lambda: ["*"],
         description="Client profiles that may use this server. '*' = all.",
     )
+    # Per-server tool exposure overrides by profile
+    # e.g. {"Researcher": ["read_file", "list_directory"], "Coder": ["*"]}
+    profile_tool_overrides: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Per-profile tool allowlists. Overrides allowed_profiles at tool level.",
+    )
     policy: ServerPolicy = Field(default_factory=ServerPolicy)
+    discovery: DiscoveryCache = Field(
+        default_factory=DiscoveryCache,
+        description="Cached result of the last tools/list discovery.",
+    )
     adapter: Any = Field(
         default=None,
         exclude=True,
@@ -215,6 +303,47 @@ class SubServerConfig(BaseModel):
     )
 
     model_config = {"arbitrary_types_allowed": True}
+
+    def get_effective_tools(self, profile: str | None = None) -> list[str]:
+        """
+        Return the list of tools this server exposes for a given profile.
+
+        Priority:
+          1. profile_tool_overrides[profile] if set
+          2. exposed_tools if non-empty
+          3. discovery.tool_names() (all discovered tools)
+        """
+        # Profile-specific override
+        if profile and profile in self.profile_tool_overrides:
+            overrides = self.profile_tool_overrides[profile]
+            if "*" in overrides:
+                # wildcard: fall through to exposed_tools / discovery
+                pass
+            else:
+                return overrides
+
+        # Explicit exposed_tools list
+        if self.exposed_tools:
+            return self.exposed_tools
+
+        # Fall back to discovered tools
+        return self.discovery.tool_names()
+
+    def is_tool_allowed_for_profile(self, tool_name: str, profile: str) -> bool:
+        """Check if a specific tool is allowed for a given profile."""
+        # Check profile_tool_overrides first
+        if profile in self.profile_tool_overrides:
+            overrides = self.profile_tool_overrides[profile]
+            if "*" not in overrides:
+                return tool_name in overrides
+
+        # Check allowed_profiles
+        if "*" not in self.allowed_profiles and profile not in self.allowed_profiles:
+            return False
+
+        # Check exposed_tools
+        effective = self.get_effective_tools(profile)
+        return tool_name in effective
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +390,54 @@ class ClientProfile(BaseModel):
         default_factory=list,
         description="Tools explicitly denied (takes precedence over allowed_tools).",
     )
+    # Per-server exposure: {"filesystem-main": ["read_file"], "search-1": ["web_search"]}
+    server_tool_grants: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Per-server tool grants for fine-grained control.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routing table entry
+# ---------------------------------------------------------------------------
+
+class RoutingEntry(BaseModel):
+    """
+    A single entry in the routing table.
+    Maps a tool name → server name for a specific environment.
+    """
+    tool_name: str
+    server_name: str
+    server_type: ServerType
+    transport: TransportType
+    profiles: list[str] = Field(
+        description="Profiles that can access this tool via this route."
+    )
+
+
+class RoutingTable(BaseModel):
+    """
+    The full routing table for an environment.
+    Built by RoutingTableBuilder from the registered sub-servers.
+    """
+    environment: str
+    entries: list[RoutingEntry] = Field(default_factory=list)
+    built_at: datetime | None = None
+
+    def resolve(self, tool_name: str, profile: str) -> RoutingEntry | None:
+        """Find the routing entry for a tool+profile combination."""
+        for entry in self.entries:
+            if entry.tool_name == tool_name:
+                if "*" in entry.profiles or profile in entry.profiles:
+                    return entry
+        return None
+
+    def all_tools_for_profile(self, profile: str) -> list[str]:
+        """List all tool names accessible by a given profile."""
+        return [
+            e.tool_name for e in self.entries
+            if "*" in e.profiles or profile in e.profiles
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -292,3 +469,9 @@ class ToolCallResponse(BaseModel):
     result: dict[str, Any] | None = None
     error: str | None = None
     request_id: str | None = None
+    # Routing metadata (never contains secrets)
+    routed_to: str | None = Field(
+        default=None,
+        description="Name of the sub-server that handled this call.",
+    )
+    env: str | None = None

@@ -4,16 +4,18 @@ GUI API — Multi-MCP
 FastAPI router that powers the management GUI.
 Provides REST endpoints for:
   - Environment management (dev/stage/prod)
-  - Sub-server registry
+  - Sub-server registry (full CRUD + discovery + routing table)
   - Aliases (SSH, Search)
   - Policies
-  - Client profiles
+  - Client profiles (with per-server tool grants)
   - Log viewing (audit + execution)
   - Secret management (write-only; never returns plain text)
+  - Policy defaults with rationale
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -21,16 +23,20 @@ from pydantic import BaseModel
 
 from multi_mcp.models.config import (
     ClientProfile,
+    DiscoveryStatus,
     Environment,
     EnvironmentConfig,
     ExecPolicy,
     FilesystemPolicy,
+    RoutingTable,
     SearchAlias,
     SearchPolicy,
     ServerPolicy,
+    ServerType,
     SSHAlias,
     SSHPolicy,
     SubServerConfig,
+    TransportType,
 )
 from multi_mcp.models.secrets import SecretStore
 from multi_mcp.models.settings_manager import SettingsManager
@@ -60,6 +66,17 @@ def _save_env(cfg: EnvironmentConfig) -> None:
     _settings.save(cfg)
 
 
+def _server_to_dict(s: SubServerConfig) -> dict[str, Any]:
+    d = s.model_dump(exclude={"adapter"})
+    # Convert discovery datetimes to ISO strings for JSON serialisation
+    if d.get("discovery"):
+        disc = d["discovery"]
+        for key in ("last_attempted_at", "last_succeeded_at"):
+            if disc.get(key) and hasattr(disc[key], "isoformat"):
+                disc[key] = disc[key].isoformat()
+    return d
+
+
 # ---------------------------------------------------------------------------
 # Environments
 # ---------------------------------------------------------------------------
@@ -86,23 +103,110 @@ def get_environment(env: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Sub-server registry
+# Sub-server Registry — full CRUD
 # ---------------------------------------------------------------------------
 
 @router.get("/environments/{env}/servers")
 def list_servers(env: str) -> list[dict[str, Any]]:
     cfg = _get_env(env)
-    return [s.model_dump(exclude={"adapter"}) for s in cfg.sub_servers]
+    return [_server_to_dict(s) for s in cfg.sub_servers]
+
+
+class SubServerCreate(BaseModel):
+    """Request body for creating/updating a sub-server registration."""
+    name: str
+    server_type: ServerType
+    transport: TransportType = TransportType.builtin
+    command: str | None = None
+    endpoint: str | None = None
+    env_scope: list[str] = ["dev", "stage", "prod"]
+    enabled: bool = True
+    tags: list[str] = []
+    description: str = ""
+    version_pin: str | None = None
+    exposed_tools: list[str] = []
+    allowed_profiles: list[str] = ["*"]
+    profile_tool_overrides: dict[str, list[str]] = {}
 
 
 @router.post("/environments/{env}/servers")
-def add_server(env: str, server: SubServerConfig) -> dict[str, str]:
+def add_server(env: str, body: SubServerCreate) -> dict[str, Any]:
+    """Register a new sub-server (or replace an existing one with the same name)."""
     cfg = _get_env(env)
-    # Replace if name already exists
-    cfg.sub_servers = [s for s in cfg.sub_servers if s.name != server.name]
+
+    # Validate transport ↔ command/endpoint consistency
+    if body.transport == TransportType.stdio and not body.command:
+        raise HTTPException(
+            status_code=422,
+            detail="stdio transport requires 'command' to be set",
+        )
+    if body.transport in (TransportType.http, TransportType.websocket) and not body.endpoint:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{body.transport.value} transport requires 'endpoint' to be set",
+        )
+
+    server = SubServerConfig(
+        name=body.name,
+        server_type=body.server_type,
+        transport=body.transport,
+        command=body.command,
+        endpoint=body.endpoint,
+        env_scope=body.env_scope,
+        enabled=body.enabled,
+        tags=body.tags,
+        description=body.description,
+        version_pin=body.version_pin,
+        exposed_tools=body.exposed_tools,
+        allowed_profiles=body.allowed_profiles,
+        profile_tool_overrides=body.profile_tool_overrides,
+    )
+    cfg.sub_servers = [s for s in cfg.sub_servers if s.name != body.name]
     cfg.sub_servers.append(server)
     _save_env(cfg)
-    return {"status": "ok", "server": server.name}
+    return {"status": "ok", "server": body.name}
+
+
+@router.get("/environments/{env}/servers/{name}")
+def get_server(env: str, name: str) -> dict[str, Any]:
+    cfg = _get_env(env)
+    for s in cfg.sub_servers:
+        if s.name == name:
+            return _server_to_dict(s)
+    raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+
+
+@router.put("/environments/{env}/servers/{name}")
+def update_server(env: str, name: str, body: SubServerCreate) -> dict[str, Any]:
+    """Update an existing sub-server registration."""
+    cfg = _get_env(env)
+    existing = next((s for s in cfg.sub_servers if s.name == name), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+
+    # Preserve discovery cache across updates
+    discovery_cache = existing.discovery
+
+    server = SubServerConfig(
+        name=body.name,  # allow rename
+        server_type=body.server_type,
+        transport=body.transport,
+        command=body.command,
+        endpoint=body.endpoint,
+        env_scope=body.env_scope,
+        enabled=body.enabled,
+        tags=body.tags,
+        description=body.description,
+        version_pin=body.version_pin,
+        exposed_tools=body.exposed_tools,
+        allowed_profiles=body.allowed_profiles,
+        profile_tool_overrides=body.profile_tool_overrides,
+        discovery=discovery_cache,
+    )
+    cfg.sub_servers = [s for s in cfg.sub_servers if s.name != name]
+    cfg.sub_servers.append(server)
+    _save_env(cfg)
+    return {"status": "ok", "server": body.name}
 
 
 @router.delete("/environments/{env}/servers/{name}")
@@ -125,6 +229,151 @@ def toggle_server(env: str, name: str, enabled: bool) -> dict[str, Any]:
             _save_env(cfg)
             return {"status": "ok", "server": name, "enabled": enabled}
     raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+
+
+# ---------------------------------------------------------------------------
+# Sub-server Discovery (tools/list)
+# ---------------------------------------------------------------------------
+
+@router.post("/environments/{env}/servers/{name}/discover")
+async def discover_server_tools(env: str, name: str) -> dict[str, Any]:
+    """
+    Trigger tools/list discovery for a specific sub-server.
+    Updates the discovery cache and saves the config.
+    """
+    from multi_mcp.hub.discovery import DiscoveryService
+    from multi_mcp.hub.factory import HubFactory
+
+    cfg = _get_env(env)
+    server = next((s for s in cfg.sub_servers if s.name == name), None)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+
+    # Instantiate adapter for builtin servers so discovery can query it
+    if server.transport == TransportType.builtin and server.adapter is None:
+        try:
+            e = Environment(env)
+            adapter = HubFactory._build_adapter(server, cfg, _secrets)
+            server.adapter = adapter
+        except Exception:  # noqa: BLE001
+            pass
+
+    svc = DiscoveryService()
+    cache = await svc.discover(server)
+    _save_env(cfg)
+
+    return {
+        "server": name,
+        "status": cache.status.value,
+        "tool_count": len(cache.tools),
+        "tools": [t.name for t in cache.tools],
+        "error": cache.error_message,
+        "last_attempted_at": cache.last_attempted_at.isoformat() if cache.last_attempted_at else None,
+    }
+
+
+@router.post("/environments/{env}/discover-all")
+async def discover_all_servers(env: str) -> dict[str, Any]:
+    """Run tools/list discovery for all enabled sub-servers in an environment."""
+    from multi_mcp.hub.discovery import DiscoveryService
+    from multi_mcp.hub.factory import HubFactory
+
+    cfg = _get_env(env)
+    enabled = [s for s in cfg.sub_servers if s.enabled]
+
+    # Instantiate adapters for builtin servers
+    for server in enabled:
+        if server.transport == TransportType.builtin and server.adapter is None:
+            try:
+                adapter = HubFactory._build_adapter(server, cfg, _secrets)
+                server.adapter = adapter
+            except Exception:  # noqa: BLE001
+                pass
+
+    svc = DiscoveryService()
+    await svc.discover_all(enabled)
+    _save_env(cfg)
+
+    return {
+        "env": env,
+        "results": [
+            {
+                "server": s.name,
+                "status": s.discovery.status.value,
+                "tool_count": len(s.discovery.tools),
+                "tools": [t.name for t in s.discovery.tools],
+            }
+            for s in enabled
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routing Table
+# ---------------------------------------------------------------------------
+
+@router.get("/environments/{env}/routing-table")
+def get_routing_table(env: str, profile: str = "*") -> dict[str, Any]:
+    """
+    Build and return the routing table for an environment.
+    Optionally filter by client profile.
+    """
+    from multi_mcp.hub.discovery import RoutingTableBuilder
+
+    cfg = _get_env(env)
+    table = RoutingTableBuilder.build(
+        servers=cfg.sub_servers,
+        profiles=cfg.client_profiles,
+        env_name=env,
+    )
+
+    if profile != "*":
+        entries = [e for e in table.entries if "*" in e.profiles or profile in e.profiles]
+    else:
+        entries = table.entries
+
+    return {
+        "environment": env,
+        "profile_filter": profile,
+        "built_at": table.built_at.isoformat() if table.built_at else None,
+        "total_routes": len(entries),
+        "routes": [e.model_dump() for e in entries],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Profile tool grants (per-server fine control)
+# ---------------------------------------------------------------------------
+
+class ProfileToolGrant(BaseModel):
+    server_name: str
+    tools: list[str]  # ["*"] for all, or specific tool names
+
+
+@router.put("/environments/{env}/servers/{name}/profile-grants/{profile}")
+def set_profile_tool_grant(
+    env: str, name: str, profile: str, body: ProfileToolGrant
+) -> dict[str, Any]:
+    """Set per-profile tool grants for a specific sub-server."""
+    cfg = _get_env(env)
+    server = next((s for s in cfg.sub_servers if s.name == name), None)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+    server.profile_tool_overrides[profile] = body.tools
+    _save_env(cfg)
+    return {"status": "ok", "server": name, "profile": profile, "tools": body.tools}
+
+
+@router.delete("/environments/{env}/servers/{name}/profile-grants/{profile}")
+def delete_profile_tool_grant(env: str, name: str, profile: str) -> dict[str, str]:
+    """Remove per-profile tool grants for a specific sub-server."""
+    cfg = _get_env(env)
+    server = next((s for s in cfg.sub_servers if s.name == name), None)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+    server.profile_tool_overrides.pop(profile, None)
+    _save_env(cfg)
+    return {"status": "deleted", "server": name, "profile": profile}
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +609,44 @@ def get_policy_defaults() -> dict[str, Any]:
             },
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Server type / transport metadata (for GUI dropdowns)
+# ---------------------------------------------------------------------------
+
+@router.get("/server-types")
+def get_server_types() -> dict[str, Any]:
+    """Return available server types and transports for GUI dropdowns."""
+    return {
+        "server_types": [
+            {"value": t.value, "label": t.value.capitalize(),
+             "description": _SERVER_TYPE_DESC.get(t.value, "")}
+            for t in ServerType
+        ],
+        "transports": [
+            {"value": t.value, "label": t.value.upper(),
+             "description": _TRANSPORT_DESC.get(t.value, "")}
+            for t in TransportType
+        ],
+    }
+
+
+_SERVER_TYPE_DESC = {
+    "filesystem": "파일 읽기/쓰기 (allowed_root 강제)",
+    "exec": "로컬 명령 실행 (timeout/output/concurrency 강제)",
+    "ssh": "원격 SSH 실행 (alias 기반, 자격증명 미노출)",
+    "logs": "로그/프로세스 조회 (read-only, 마스킹)",
+    "search": "웹 검색 (Tavily, quota/cost guard)",
+    "artifact": "결과물 저장/조회 (artifact_root 강제)",
+    "github": "GitHub 작업 (추후 구현)",
+    "rag": "문서 검색/RAG (추후 구현)",
+    "other": "사용자 정의 MCP 서버",
+}
+
+_TRANSPORT_DESC = {
+    "stdio": "자식 프로세스로 실행, stdin/stdout 통신 (MCP 표준)",
+    "http": "HTTP/SSE 엔드포인트 (이미 실행 중인 서버)",
+    "websocket": "WebSocket 엔드포인트",
+    "builtin": "Multi-MCP 내장 Python 어댑터",
+}

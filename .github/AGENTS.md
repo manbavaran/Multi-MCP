@@ -372,3 +372,14 @@ GUI는 각 항목에 “추천 이유”를 반드시 표시한다.
 ---
 
 끝.
+
+---
+
+## 13. Sub-server Registry & Discovery (MVP Core)
+
+- **사용자 확장성**: Multi-MCP의 핵심은 사용자가 직접 기존 MCP 서버를 등록/관리할 수 있는 기능에 있다.
+- **GUI 기반 관리**: GUI에 "Sub-servers" 페이지를 제공하여, 사용자가 서버를 등록/수정/비활성화/삭제할 수 있어야 한다.
+- **최소 등록 항목**: `name`, `type`, `transport`, `endpoint/command`, `env_scope`, `enabled`는 필수 항목이다.
+- **자동 디스커버리**: 등록된 서버에 `tools/list`를 호출하여 제공하는 도구 목록을 자동으로 가져와 캐시한다.
+- **동적 라우팅 테이블**: 디스커버리 결과를 바탕으로 `tool -> sub-server` 라우팅 테이블을 동적으로 구성한다.
+- **프로파일 기반 노출 제어**: Client Profile에서 서버별/도구별로 노출 여부를 세밀하게 제어할 수 있어야 한다. (`profile_tool_overrides`)

@@ -138,3 +138,13 @@ Client → POST /mcp/call/{env}
 | Artifact | Built-in adapter | — |
 | GitHub | `github/github-mcp-server` | Future |
 | Docs/RAG | TBD | Future |
+
+
+### 4. Sub-server Registry & Discovery
+
+Multi-MCP의 확장성은 Sub-server Registry에 의존합니다. 사용자는 GUI를 통해 외부 또는 내부 MCP 서버를 등록할 수 있습니다.
+
+- **등록**: 사용자는 서버의 `name`, `type`, `transport` (`stdio`, `http`, `websocket`, `builtin`), 그리고 `command` 또는 `endpoint`를 지정하여 새 서버를 등록합니다.
+- **디스커버리**: 등록된 서버에 대해 `tools/list` 호출을 수행하여 제공하는 도구 목록을 가져옵니다. 이 결과는 `SubServerConfig` 내의 `DiscoveryCache`에 저장됩니다.
+- **라우팅 테이블 빌더**: `RoutingTableBuilder`는 모든 활성화된 서버의 디스커버리 캐시와 클라이언트 프로파일 설정을 종합하여, 어떤 `tool`이 어떤 `server`에 의해 처리되어야 하는지를 결정하는 라우팅 테이블을 동적으로 생성합니다.
+- **프로파일 기반 노출 제어**: 라우팅 테이블은 클라이언트 프로파일의 `allowed_tools`, `denied_tools` 및 서버의 `allowed_profiles`, `profile_tool_overrides` 설정을 모두 고려하여 최종적으로 특정 프로파일이 사용할 수 있는 도구 목록을 결정합니다.

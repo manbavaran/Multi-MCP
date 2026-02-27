@@ -153,6 +153,17 @@ curl -X POST http://localhost:8765/mcp/call/dev \
 
 ---
 
+## Sub-server Registry
+
+Multi-MCP의 핵심 기능은 기존 MCP 서버를 **Sub-server**로 등록하여 확장하는 것입니다. GUI의 `Sub-servers` 페이지에서 다음을 관리할 수 있습니다:
+
+- **등록/수정/삭제**: `name`, `type`, `transport`(`builtin`, `stdio`, `http`), `command`/`endpoint` 등을 포함한 서버 정보를 관리합니다.
+- **자동 디스커버리**: 등록된 서버의 `tools/list`를 호출하여 사용 가능한 도구 목록을 자동으로 가져옵니다.
+- **라우팅 테이블**: 디스커버리 결과를 바탕으로 `tool -> sub-server` 라우팅 테이블을 동적으로 구성하고, `Routing Table` 페이지에서 확인할 수 있습니다.
+- **프로파일 노출 제어**: 각 서버의 상세 페이지에서 프로파일별로 노출할 도구를 세밀하게 제어할 수 있습니다.
+
+---
+
 ## GUI 관리 콘솔
 
 `http://localhost:8765` 접속 시 다음 기능을 제공합니다:
