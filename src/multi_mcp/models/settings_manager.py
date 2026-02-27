@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 
 from multi_mcp.models.config import Environment, EnvironmentConfig
+from multi_mcp.models.bootstrap import bootstrap_core_servers
 
 
 _DEFAULT_CONFIG_DIR = Path("config")
@@ -59,10 +60,27 @@ class SettingsManager:
         return envs
 
     def get_or_create_default(self, env: Environment) -> EnvironmentConfig:
-        """Return the saved config or a fresh default."""
+        """
+        Return the saved config, bootstrapping core servers if needed.
+
+        On first run (no config file) a fresh default is created and all 6 core
+        servers are automatically registered.  On subsequent runs any missing
+        core servers are silently added (idempotent).
+        """
         existing = self.load(env)
         if existing:
+            # Idempotent: add any core servers that are not yet present
+            modified = bootstrap_core_servers(existing)
+            if modified:
+                self.save(existing)
             return existing
+
+        # First run: create default config and bootstrap all cores
         default = EnvironmentConfig(name=env)
+        bootstrap_core_servers(default)
         self.save(default)
         return default
+
+    def ensure_bootstrapped(self, env: Environment) -> EnvironmentConfig:
+        """Alias for get_or_create_default — explicit intent for startup code."""
+        return self.get_or_create_default(env)

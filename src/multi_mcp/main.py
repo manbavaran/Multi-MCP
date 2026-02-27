@@ -10,6 +10,7 @@ Starts the FastAPI application that serves:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -18,12 +19,35 @@ from fastapi.staticfiles import StaticFiles
 
 from multi_mcp.gui.api import router as gui_router
 from multi_mcp.gui.mcp_endpoint import router as mcp_router
+from multi_mcp.models.config import Environment
+from multi_mcp.models.settings_manager import SettingsManager
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Multi-MCP Hub",
     description="A gateway for managing and enforcing policies on multiple MCP sub-servers.",
     version="0.1.0",
 )
+
+
+@app.on_event("startup")
+async def _bootstrap_on_startup() -> None:
+    """
+    On every startup, ensure all 6 core built-in servers are registered
+    in every environment (dev / stage / prod).
+
+    This is idempotent: existing servers are never overwritten.
+    """
+    manager = SettingsManager()
+    for env in Environment:
+        cfg = manager.ensure_bootstrapped(env)
+        core_count = sum(1 for s in cfg.sub_servers if "core" in s.tags)
+        logger.info(
+            "[bootstrap] env=%s total_servers=%d core_servers=%d",
+            env.value, len(cfg.sub_servers), core_count,
+        )
+    logger.info("[bootstrap] Core server bootstrap complete.")
 
 # Mount GUI API
 app.include_router(gui_router)
