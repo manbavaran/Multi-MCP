@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multi-MCP Hub — 관리 콘솔</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d2e;
+      --surface2: #252840;
+      --accent: #6c63ff;
+      --accent2: #4ecdc4;
+      --danger: #e74c3c;
+      --success: #2ecc71;
+      --warn: #f39c12;
+      --text: #e0e0e0;
+      --muted: #888;
+      --border: #333;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Layout */
+    #app { display: flex; height: 100vh; overflow: hidden; }
+    #sidebar { width: 220px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+    #main { flex: 1; overflow-y: auto; padding: 24px; }
+
+    /* Sidebar */
+    .sidebar-header { padding: 20px 16px 12px; border-bottom: 1px solid var(--border); }
+    .sidebar-header h1 { font-size: 16px; font-weight: 700; color: var(--accent); }
+    .sidebar-header p { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .nav-section { padding: 12px 0; }
+    .nav-label { padding: 4px 16px; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+    .nav-item { display: flex; align-items: center; gap: 8px; padding: 8px 16px; cursor: pointer; border-left: 3px solid transparent; transition: all 0.15s; }
+    .nav-item:hover { background: var(--surface2); }
+    .nav-item.active { border-left-color: var(--accent); background: var(--surface2); color: var(--accent); }
+    .nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+    /* Env selector */
+    .env-selector { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .env-selector label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px; }
+    .env-selector select { width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; border-radius: 4px; font-size: 13px; }
+
+    /* Cards */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+    .card-title { font-size: 15px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+    .card-title .badge { font-size: 10px; padding: 2px 6px; border-radius: 10px; background: var(--accent); color: white; }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); border-bottom: 1px solid var(--border); }
+    td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+
+    /* Buttons */
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 5px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.15s; }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { background: #5a52e0; }
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-danger:hover { background: #c0392b; }
+    .btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    .btn-ghost:hover { background: var(--surface2); }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .btn-success { background: var(--success); color: white; }
+
+    /* Forms */
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      padding: 8px 10px; border-radius: 5px; font-size: 13px; font-family: inherit;
+    }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+      outline: none; border-color: var(--accent);
+    }
+    .form-hint { font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+
+    /* Rationale box */
+    .rationale { background: var(--surface2); border-left: 3px solid var(--accent2); padding: 8px 12px; border-radius: 0 4px 4px 0; margin-top: 4px; font-size: 12px; color: var(--muted); }
+    .rationale strong { color: var(--accent2); }
+
+    /* Status badges */
+    .badge-enabled { background: #1a3a2a; color: var(--success); padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+    .badge-disabled { background: #3a1a1a; color: var(--danger); padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+    .badge-env { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge-dev { background: #1a2a3a; color: #4ecdc4; }
+    .badge-stage { background: #2a2a1a; color: var(--warn); }
+    .badge-prod { background: #3a1a1a; color: var(--danger); }
+
+    /* Log viewer */
+    .log-container { background: #0a0c14; border: 1px solid var(--border); border-radius: 6px; padding: 12px; max-height: 500px; overflow-y: auto; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; }
+    .log-entry { padding: 4px 0; border-bottom: 1px solid #1a1d2e; }
+    .log-entry:last-child { border-bottom: none; }
+    .log-ts { color: var(--muted); margin-right: 8px; }
+    .log-success { color: var(--success); }
+    .log-failure { color: var(--danger); }
+    .log-tool { color: var(--accent); }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+    .tab { padding: 10px 20px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); font-size: 13px; }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* Page header */
+    .page-header { margin-bottom: 24px; }
+    .page-header h2 { font-size: 20px; font-weight: 700; }
+    .page-header p { color: var(--muted); margin-top: 4px; font-size: 13px; }
+
+    /* Toggle switch */
+    .toggle { position: relative; display: inline-block; width: 36px; height: 20px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #444; border-radius: 20px; transition: 0.3s; }
+    .toggle-slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.3s; }
+    input:checked + .toggle-slider { background: var(--accent); }
+    input:checked + .toggle-slider:before { transform: translateX(16px); }
+
+    /* Alerts */
+    .alert { padding: 10px 14px; border-radius: 5px; margin-bottom: 12px; font-size: 13px; }
+    .alert-success { background: #1a3a2a; border: 1px solid var(--success); color: var(--success); }
+    .alert-error { background: #3a1a1a; border: 1px solid var(--danger); color: var(--danger); }
+    .alert-info { background: #1a1a3a; border: 1px solid var(--accent); color: var(--accent); }
+
+    /* Modal */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center; }
+    .modal-overlay.open { display: flex; }
+    .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 24px; width: 480px; max-width: 95vw; max-height: 90vh; overflow-y: auto; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .modal-header h3 { font-size: 16px; font-weight: 600; }
+    .modal-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 20px; }
+    .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+    /* Misc */
+    .masked { font-family: monospace; color: var(--muted); }
+    .empty-state { text-align: center; padding: 40px; color: var(--muted); }
+    .empty-state .icon { font-size: 40px; margin-bottom: 8px; }
+    .flex-row { display: flex; gap: 8px; align-items: center; }
+    .ml-auto { margin-left: auto; }
+    .text-muted { color: var(--muted); }
+    .text-danger { color: var(--danger); }
+    .text-success { color: var(--success); }
+    .mt-4 { margin-top: 16px; }
+    .mb-4 { margin-bottom: 16px; }
+    .section-divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <!-- Sidebar -->
+  <nav id="sidebar">
+    <div class="sidebar-header">
+      <h1>⚡ Multi-MCP</h1>
+      <p>Hub Control Plane</p>
+    </div>
+    <div class="env-selector">
+      <label>현재 환경</label>
+      <select id="envSelect" onchange="switchEnv(this.value)">
+        <option value="">-- 환경 선택 --</option>
+        <option value="dev">dev</option>
+        <option value="stage">stage</option>
+        <option value="prod">prod</option>
+      </select>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">설정</div>
+      <div class="nav-item active" onclick="showPage('environments')" id="nav-environments">
+        <span class="nav-icon">🌍</span> 환경
+      </div>
+      <div class="nav-item" onclick="showPage('servers')" id="nav-servers">
+        <span class="nav-icon">🔌</span> Sub-Servers
+      </div>
+      <div class="nav-item" onclick="showPage('aliases')" id="nav-aliases">
+        <span class="nav-icon">🔑</span> Aliases
+      </div>
+      <div class="nav-item" onclick="showPage('policies')" id="nav-policies">
+        <span class="nav-icon">🛡️</span> 정책
+      </div>
+      <div class="nav-item" onclick="showPage('profiles')" id="nav-profiles">
+        <span class="nav-icon">👤</span> 프로파일
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">운영</div>
+      <div class="nav-item" onclick="showPage('logs')" id="nav-logs">
+        <span class="nav-icon">📋</span> 로그
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <main id="main">
+
+    <!-- ======================== ENVIRONMENTS PAGE ======================== -->
+    <div id="page-environments" class="tab-content active">
+      <div class="page-header">
+        <h2>🌍 환경 관리</h2>
+        <p>dev / stage / prod 환경을 생성하고 관리합니다. 각 환경은 독립적인 설정을 가집니다.</p>
+      </div>
+      <div class="card">
+        <div class="card-title">환경 목록</div>
+        <div id="envList">
+          <div class="empty-state"><div class="icon">🌍</div>환경을 로드 중...</div>
+        </div>
+        <hr class="section-divider">
+        <div class="flex-row">
+          <span style="font-size:13px;color:var(--muted)">새 환경 생성:</span>
+          <button class="btn btn-ghost btn-sm" onclick="createEnv('dev')">dev</button>
+          <button class="btn btn-ghost btn-sm" onclick="createEnv('stage')">stage</button>
+          <button class="btn btn-ghost btn-sm" onclick="createEnv('prod')">prod</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">⚠️ 환경별 보안 정책</div>
+        <table>
+          <thead><tr><th>환경</th><th>쓰기 기본값</th><th>SSH act 기본값</th><th>권장 사용</th></tr></thead>
+          <tbody>
+            <tr><td><span class="badge-env badge-dev">dev</span></td><td class="text-success">허용</td><td class="text-success">허용</td><td>로컬 개발 및 테스트</td></tr>
+            <tr><td><span class="badge-env badge-stage">stage</span></td><td class="text-warn">제한적 허용</td><td class="text-warn">제한적</td><td>통합 테스트</td></tr>
+            <tr><td><span class="badge-env badge-prod">prod</span></td><td class="text-danger">기본 OFF</td><td class="text-danger">기본 OFF</td><td>프로덕션 운영</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ======================== SERVERS PAGE ======================== -->
+    <div id="page-servers" class="tab-content">
+      <div class="page-header">
+        <div class="flex-row">
+          <div>
+            <h2>🔌 Sub-Server Registry</h2>
+            <p>MCP 서버를 등록하고 활성화/비활성화합니다.</p>
+          </div>
+          <button class="btn btn-primary ml-auto" onclick="openAddServerModal()">+ 서버 추가</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="serverList">
+          <div class="empty-state"><div class="icon">🔌</div>환경을 먼저 선택하세요.</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">📦 권장 MCP 서버 후보</div>
+        <table>
+          <thead><tr><th>기능</th><th>권장 서버</th><th>패키지</th><th>비고</th></tr></thead>
+          <tbody>
+            <tr><td>Filesystem</td><td>@modelcontextprotocol/server-filesystem</td><td>npm</td><td>공식 참조 구현</td></tr>
+            <tr><td>Web Search</td><td>tavily-mcp (mcp-tavily)</td><td>pip</td><td>Tavily API 기반</td></tr>
+            <tr><td>SSH</td><td>mcp-ssh-server (커뮤니티)</td><td>pip/npm</td><td>alias 기반 접근</td></tr>
+            <tr><td>Exec/Terminal</td><td>내장 어댑터</td><td>내장</td><td>정책 강제 필수</td></tr>
+            <tr><td>Logs/Process</td><td>내장 어댑터</td><td>내장</td><td>읽기 전용 기본</td></tr>
+            <tr><td>Artifact</td><td>내장 어댑터</td><td>내장</td><td>artifact_root 고정</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ======================== ALIASES PAGE ======================== -->
+    <div id="page-aliases" class="tab-content">
+      <div class="page-header">
+        <h2>🔑 Aliases 관리</h2>
+        <p>SSH 원격 서버와 API 키를 alias로 등록합니다. 실제 값은 암호화 저장되며 클라이언트에 노출되지 않습니다.</p>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active" onclick="switchAliasTab('ssh')">SSH Remotes</div>
+        <div class="tab" onclick="switchAliasTab('search')">Search API Keys</div>
+      </div>
+
+      <div id="alias-tab-ssh" class="tab-content active">
+        <div class="card">
+          <div class="flex-row mb-4">
+            <div class="card-title" style="margin-bottom:0">SSH 원격 서버</div>
+            <button class="btn btn-primary btn-sm ml-auto" onclick="openAddSSHModal()">+ SSH 추가</button>
+          </div>
+          <div id="sshAliasList">
+            <div class="empty-state"><div class="icon">🖥️</div>환경을 먼저 선택하세요.</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="rationale">
+            <strong>보안 원칙:</strong> 클라이언트(LangGraph 등)는 alias 이름만 사용합니다.
+            실제 host/username/password/key는 서버 내부 암호화 저장소에만 존재합니다.
+            예: <code>ssh_run(alias="remote1", cmd="ls")</code>
+          </div>
+        </div>
+      </div>
+
+      <div id="alias-tab-search" class="tab-content">
+        <div class="card">
+          <div class="flex-row mb-4">
+            <div class="card-title" style="margin-bottom:0">Search API Keys</div>
+            <button class="btn btn-primary btn-sm ml-auto" onclick="openAddSearchModal()">+ API Key 추가</button>
+          </div>
+          <div id="searchAliasList">
+            <div class="empty-state"><div class="icon">🔍</div>환경을 먼저 선택하세요.</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="rationale">
+            <strong>비용 가드:</strong> API 키는 암호화 저장됩니다. 클라이언트는 alias만 사용합니다.
+            쿼터 초과 시 서버가 자동으로 요청을 차단합니다.
+            예: <code>web_search(alias="tavily_default", query="...")</code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================== POLICIES PAGE ======================== -->
+    <div id="page-policies" class="tab-content">
+      <div class="page-header">
+        <h2>🛡️ 정책 설정</h2>
+        <p>모든 정책은 설정이 아니라 강제(enforcement)됩니다. 클라이언트가 우회할 수 없습니다.</p>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active" onclick="switchPolicyTab('exec')">Exec 정책</div>
+        <div class="tab" onclick="switchPolicyTab('filesystem')">Filesystem 정책</div>
+        <div class="tab" onclick="switchPolicyTab('search')">Search 정책</div>
+        <div class="tab" onclick="switchPolicyTab('logs')">Logs 정책</div>
+      </div>
+
+      <!-- Exec Policy -->
+      <div id="policy-tab-exec" class="tab-content active">
+        <div class="card">
+          <div class="card-title">⚙️ Exec 정책 <span class="badge">항상 강제</span></div>
+          <div id="execPolicyForm">
+            <div class="form-row">
+              <div class="form-group">
+                <label>timeout_sec (실행 제한 시간)</label>
+                <input type="number" id="exec_timeout" value="60" min="1" max="3600" />
+                <div class="rationale"><strong>추천 이유:</strong> 무한 대기/블로킹 방지. 실패 징후는 보통 빠르게 드러남. 값을 높이면 장시간 블로킹 위험이 증가합니다.</div>
+              </div>
+              <div class="form-group">
+                <label>max_stdout_kb (출력 크기 제한)</label>
+                <input type="number" id="exec_stdout_kb" value="256" min="1" max="10240" />
+                <div class="rationale"><strong>추천 이유:</strong> 로그 폭주로 인한 비용·응답 지연·저장 공간 문제 방지.</div>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>max_concurrency (최대 동시 실행)</label>
+                <input type="number" id="exec_concurrency" value="1" min="1" max="10" />
+                <div class="rationale"><strong>추천 이유:</strong> 로그/상태 혼선 및 자원 폭주 방지. 순차 실행이 기본.</div>
+              </div>
+              <div class="form-group">
+                <label>allowed_cwd (실행 디렉토리 고정)</label>
+                <input type="text" id="exec_cwd" value="/tmp/mcp_workspace" />
+                <div class="rationale"><strong>추천 이유:</strong> cwd를 고정하여 임의 경로 접근을 방지합니다.</div>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>denylist (차단 명령 패턴, 줄 구분)</label>
+              <textarea id="exec_denylist" rows="4">rm -rf /
+:(){ :|:& };:
+dd if=
+mkfs.</textarea>
+              <div class="rationale"><strong>추천 이유:</strong> 위험한 시스템 명령을 기본 차단합니다.</div>
+            </div>
+            <button class="btn btn-primary" onclick="saveExecPolicy()">정책 저장</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filesystem Policy -->
+      <div id="policy-tab-filesystem" class="tab-content">
+        <div class="card">
+          <div class="card-title">📁 Filesystem 정책 <span class="badge">항상 강제</span></div>
+          <div class="form-group">
+            <label>allowed_root (허용 루트 경로)</label>
+            <input type="text" id="fs_allowed_root" value="/tmp/mcp_workspace" />
+            <div class="rationale"><strong>추천 이유:</strong> 이 경로 외부 접근은 심볼릭 링크 우회 포함 모두 차단됩니다.</div>
+          </div>
+          <div class="form-group">
+            <label>쓰기 허용</label>
+            <div class="flex-row">
+              <label class="toggle">
+                <input type="checkbox" id="fs_allow_write" />
+                <span class="toggle-slider"></span>
+              </label>
+              <span class="text-muted">기본 OFF — 읽기 전용. 쓰기는 명시적으로 활성화해야 합니다.</span>
+            </div>
+            <div class="rationale"><strong>추천 이유:</strong> 기본적으로 읽기 전용. 쓰기를 활성화하면 파일 변경/삭제 위험이 생깁니다.</div>
+          </div>
+          <button class="btn btn-primary" onclick="saveFsPolicy()">정책 저장</button>
+        </div>
+      </div>
+
+      <!-- Search Policy -->
+      <div id="policy-tab-search" class="tab-content">
+        <div class="card">
+          <div class="card-title">🔍 Search 정책 (Tavily) <span class="badge">항상 강제</span></div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>max_results (결과 수 상한)</label>
+              <input type="number" id="search_max_results" value="10" min="1" max="50" />
+              <div class="rationale"><strong>추천 이유:</strong> 근거 다양성 확보 + 비용 통제의 균형. 값을 높이면 API 비용이 증가합니다.</div>
+            </div>
+            <div class="form-group">
+              <label>daily_request_cap (일일 요청 상한)</label>
+              <input type="number" id="search_daily_cap" value="100" min="1" />
+              <div class="rationale"><strong>추천 이유:</strong> pay-as-you-go에서 비용 폭탄 방지.</div>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>monthly_credit_budget (월 예산 USD)</label>
+              <input type="number" id="search_monthly_budget" value="10" min="0" step="0.5" />
+              <div class="rationale"><strong>추천 이유:</strong> 예산 초과 시 서버가 자동으로 요청을 차단합니다.</div>
+            </div>
+            <div class="form-group">
+              <label>search_depth 기본값</label>
+              <select id="search_depth">
+                <option value="basic" selected>basic (권장)</option>
+                <option value="advanced">advanced (비용 높음)</option>
+              </select>
+              <div class="rationale"><strong>추천 이유:</strong> basic이 비용 대비 효율이 좋고 대부분의 조사에 충분합니다.</div>
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="saveSearchPolicy()">정책 저장</button>
+        </div>
+      </div>
+
+      <!-- Logs Policy -->
+      <div id="policy-tab-logs" class="tab-content">
+        <div class="card">
+          <div class="card-title">📋 Logs 정책</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>max_lines (최대 줄 수)</label>
+              <input type="number" id="logs_max_lines" value="2000" min="100" max="50000" />
+              <div class="rationale"><strong>추천 이유:</strong> 관측은 충분히 하되 전체 덤프로 폭주하지 않도록.</div>
+            </div>
+            <div class="form-group">
+              <label>time_window_minutes (기본 시간 범위)</label>
+              <input type="number" id="logs_time_window" value="10" min="1" max="1440" />
+              <div class="rationale"><strong>추천 이유:</strong> 최근 이슈 진단에 충분한 시간 범위.</div>
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="saveLogsPolicy()">정책 저장</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================== PROFILES PAGE ======================== -->
+    <div id="page-profiles" class="tab-content">
+      <div class="page-header">
+        <div class="flex-row">
+          <div>
+            <h2>👤 클라이언트 프로파일</h2>
+            <p>역할별로 노출할 도구를 분리합니다. 클라이언트는 프로파일에 허용된 도구만 사용할 수 있습니다.</p>
+          </div>
+          <button class="btn btn-primary ml-auto" onclick="openAddProfileModal()">+ 프로파일 추가</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="profileList">
+          <div class="empty-state"><div class="icon">👤</div>환경을 먼저 선택하세요.</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">📖 권장 프로파일 템플릿</div>
+        <table>
+          <thead><tr><th>프로파일</th><th>허용 도구</th><th>차단 도구</th><th>용도</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>Researcher</strong></td>
+              <td>web_search, read_file, artifact_save</td>
+              <td>write_file, exec, ssh_run</td>
+              <td>리서치/조사 전용</td>
+            </tr>
+            <tr>
+              <td><strong>Coder</strong></td>
+              <td>read_file, write_file, exec, logs</td>
+              <td>ssh_run (기본)</td>
+              <td>코드 개발</td>
+            </tr>
+            <tr>
+              <td><strong>Ops</strong></td>
+              <td>logs, ssh_read</td>
+              <td>write_file, exec, ssh_act</td>
+              <td>운영 모니터링</td>
+            </tr>
+            <tr>
+              <td><strong>Planner</strong></td>
+              <td>read_file, web_search, artifact_save</td>
+              <td>exec, ssh_run</td>
+              <td>기획/설계</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="mt-4 flex-row" style="gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" onclick="createDefaultProfile('Researcher')">Researcher 생성</button>
+          <button class="btn btn-ghost btn-sm" onclick="createDefaultProfile('Coder')">Coder 생성</button>
+          <button class="btn btn-ghost btn-sm" onclick="createDefaultProfile('Ops')">Ops 생성</button>
+          <button class="btn btn-ghost btn-sm" onclick="createDefaultProfile('Planner')">Planner 생성</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================== LOGS PAGE ======================== -->
+    <div id="page-logs" class="tab-content">
+      <div class="page-header">
+        <h2>📋 로그 뷰어</h2>
+        <p>감사 로그(Audit)와 실행 로그(Execution)는 별도 파일에 저장됩니다.</p>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active" onclick="switchLogTab('audit')">감사 로그 (Audit)</div>
+        <div class="tab" onclick="switchLogTab('execution')">실행 로그 (Execution)</div>
+      </div>
+
+      <div id="log-tab-audit" class="tab-content active">
+        <div class="card">
+          <div class="flex-row mb-4">
+            <div class="card-title" style="margin-bottom:0">
+              감사 로그 <span class="text-muted" style="font-size:12px">— 누가/언제/무슨 도구를/성공·실패</span>
+            </div>
+            <button class="btn btn-ghost btn-sm ml-auto" onclick="loadAuditLogs()">🔄 새로고침</button>
+          </div>
+          <div class="log-container" id="auditLogContainer">
+            <div class="empty-state">로그를 로드 중...</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="log-tab-execution" class="tab-content">
+        <div class="card">
+          <div class="flex-row mb-4">
+            <div class="card-title" style="margin-bottom:0">
+              실행 로그 <span class="text-muted" style="font-size:12px">— stdout/stderr/결과 아티팩트</span>
+            </div>
+            <button class="btn btn-ghost btn-sm ml-auto" onclick="loadExecutionLogs()">🔄 새로고침</button>
+          </div>
+          <div class="log-container" id="execLogContainer">
+            <div class="empty-state">로그를 로드 중...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ======================== MODALS ======================== -->
+
+<!-- Add Server Modal -->
+<div class="modal-overlay" id="addServerModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🔌 Sub-Server 추가</h3>
+      <button class="modal-close" onclick="closeModal('addServerModal')">✕</button>
+    </div>
+    <div class="form-group">
+      <label>서버 이름 (고유 식별자)</label>
+      <input type="text" id="srv_name" placeholder="예: filesystem-main" />
+    </div>
+    <div class="form-group">
+      <label>서버 타입</label>
+      <select id="srv_type">
+        <option value="filesystem">filesystem</option>
+        <option value="exec">exec</option>
+        <option value="ssh">ssh</option>
+        <option value="logs">logs</option>
+        <option value="search">search</option>
+        <option value="artifact">artifact</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>실행 커맨드 (로컬 stdio 서버)</label>
+      <input type="text" id="srv_command" placeholder="예: npx @modelcontextprotocol/server-filesystem /workspace" />
+    </div>
+    <div class="form-group">
+      <label>원격 주소 (HTTP/SSE 서버)</label>
+      <input type="text" id="srv_address" placeholder="예: http://localhost:8001/sse" />
+    </div>
+    <div class="form-group">
+      <label>노출 도구 (쉼표 구분)</label>
+      <input type="text" id="srv_tools" placeholder="예: read_file,write_file,list_directory" />
+    </div>
+    <div class="form-group">
+      <label>허용 프로파일 (쉼표 구분, * = 모두)</label>
+      <input type="text" id="srv_profiles" value="*" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addServerModal')">취소</button>
+      <button class="btn btn-primary" onclick="addServer()">추가</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add SSH Modal -->
+<div class="modal-overlay" id="addSSHModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🖥️ SSH Alias 추가</h3>
+      <button class="modal-close" onclick="closeModal('addSSHModal')">✕</button>
+    </div>
+    <div class="alert alert-info">⚠️ 입력한 자격증명은 암호화 저장됩니다. 화면에는 마스킹된 미리보기만 표시됩니다.</div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Alias (클라이언트가 사용할 이름)</label>
+        <input type="text" id="ssh_alias" placeholder="예: remote1" />
+      </div>
+      <div class="form-group">
+        <label>Host</label>
+        <input type="text" id="ssh_host" placeholder="예: 192.168.1.100" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Port</label>
+        <input type="number" id="ssh_port" value="22" />
+      </div>
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="ssh_username" placeholder="예: ubuntu" />
+      </div>
+    </div>
+    <div class="form-group">
+      <label>인증 방식</label>
+      <select id="ssh_auth_type" onchange="toggleSSHSecret()">
+        <option value="key">SSH Key (권장)</option>
+        <option value="password">Password</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label id="ssh_secret_label">SSH Private Key (내용 전체)</label>
+      <textarea id="ssh_secret" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;..."></textarea>
+      <div class="form-hint">이 값은 암호화되어 서버에만 저장됩니다. 클라이언트에 노출되지 않습니다.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addSSHModal')">취소</button>
+      <button class="btn btn-primary" onclick="addSSHAlias()">추가</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Search Modal -->
+<div class="modal-overlay" id="addSearchModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🔍 Search API Key 추가</h3>
+      <button class="modal-close" onclick="closeModal('addSearchModal')">✕</button>
+    </div>
+    <div class="alert alert-info">⚠️ API 키는 암호화 저장됩니다. 화면에는 마스킹된 미리보기만 표시됩니다.</div>
+    <div class="form-group">
+      <label>Alias (클라이언트가 사용할 이름)</label>
+      <input type="text" id="search_alias" placeholder="예: tavily_default" />
+    </div>
+    <div class="form-group">
+      <label>Provider</label>
+      <select id="search_provider">
+        <option value="tavily">Tavily</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>API Key</label>
+      <input type="password" id="search_api_key" placeholder="tvly-xxxxxxxxxxxx" />
+      <div class="form-hint">이 값은 암호화되어 서버에만 저장됩니다. 클라이언트에 노출되지 않습니다.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addSearchModal')">취소</button>
+      <button class="btn btn-primary" onclick="addSearchAlias()">추가</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Profile Modal -->
+<div class="modal-overlay" id="addProfileModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>👤 프로파일 추가</h3>
+      <button class="modal-close" onclick="closeModal('addProfileModal')">✕</button>
+    </div>
+    <div class="form-group">
+      <label>프로파일 이름</label>
+      <input type="text" id="profile_name" placeholder="예: Researcher" />
+    </div>
+    <div class="form-group">
+      <label>설명</label>
+      <input type="text" id="profile_desc" placeholder="예: 리서치 전용 프로파일" />
+    </div>
+    <div class="form-group">
+      <label>허용 도구 (쉼표 구분)</label>
+      <input type="text" id="profile_allowed" placeholder="예: web_search,read_file,artifact_save" />
+    </div>
+    <div class="form-group">
+      <label>차단 도구 (쉼표 구분)</label>
+      <input type="text" id="profile_denied" placeholder="예: write_file,exec,ssh_run" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addProfileModal')">취소</button>
+      <button class="btn btn-primary" onclick="addProfile()">추가</button>
+    </div>
+  </div>
+</div>
+
+<!-- Alert toast -->
+<div id="toast" style="display:none;position:fixed;bottom:24px;right:24px;z-index:999;min-width:280px;"></div>
+
+<script>
+let currentEnv = '';
+
+// ---- Navigation ----
+function showPage(page) {
+  document.querySelectorAll('.tab-content[id^="page-"]').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  document.getElementById('nav-' + page).classList.add('active');
+  if (page === 'servers' && currentEnv) loadServers();
+  if (page === 'aliases' && currentEnv) { loadSSHAliases(); loadSearchAliases(); }
+  if (page === 'profiles' && currentEnv) loadProfiles();
+  if (page === 'logs') { loadAuditLogs(); loadExecutionLogs(); }
+}
+
+function switchAliasTab(tab) {
+  document.querySelectorAll('#page-aliases .tab').forEach((el, i) => el.classList.toggle('active', i === (tab === 'ssh' ? 0 : 1)));
+  document.getElementById('alias-tab-ssh').classList.toggle('active', tab === 'ssh');
+  document.getElementById('alias-tab-search').classList.toggle('active', tab === 'search');
+}
+
+function switchPolicyTab(tab) {
+  const tabs = ['exec', 'filesystem', 'search', 'logs'];
+  document.querySelectorAll('#page-policies .tab').forEach((el, i) => el.classList.toggle('active', tabs[i] === tab));
+  tabs.forEach(t => document.getElementById('policy-tab-' + t).classList.toggle('active', t === tab));
+}
+
+function switchLogTab(tab) {
+  document.querySelectorAll('#page-logs .tab').forEach((el, i) => el.classList.toggle('active', i === (tab === 'audit' ? 0 : 1)));
+  document.getElementById('log-tab-audit').classList.toggle('active', tab === 'audit');
+  document.getElementById('log-tab-execution').classList.toggle('active', tab === 'execution');
+  if (tab === 'audit') loadAuditLogs();
+  else loadExecutionLogs();
+}
+
+// ---- Env ----
+async function switchEnv(env) {
+  currentEnv = env;
+  if (!env) return;
+  await loadEnvList();
+  loadServers();
+  loadSSHAliases();
+  loadSearchAliases();
+  loadProfiles();
+}
+
+async function loadEnvList() {
+  const res = await fetch('/api/environments');
+  const envs = await res.json();
+  const el = document.getElementById('envList');
+  if (!envs.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">🌍</div>아직 환경이 없습니다. 아래에서 생성하세요.</div>';
+    return;
+  }
+  el.innerHTML = '<table><thead><tr><th>환경</th><th>상태</th><th>작업</th></tr></thead><tbody>' +
+    envs.map(e => `<tr>
+      <td><span class="badge-env badge-${e}">${e}</span></td>
+      <td><span class="badge-enabled">활성</span></td>
+      <td><button class="btn btn-ghost btn-sm" onclick="switchEnvAndShow('${e}')">선택</button></td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+async function switchEnvAndShow(env) {
+  document.getElementById('envSelect').value = env;
+  await switchEnv(env);
+}
+
+async function createEnv(env) {
+  const res = await fetch('/api/environments/' + env, { method: 'POST' });
+  const data = await res.json();
+  showToast('환경 생성: ' + data.environment, 'success');
+  await loadEnvList();
+}
+
+// ---- Servers ----
+async function loadServers() {
+  if (!currentEnv) return;
+  const res = await fetch('/api/environments/' + currentEnv + '/servers');
+  const servers = await res.json();
+  const el = document.getElementById('serverList');
+  if (!servers.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">🔌</div>등록된 서버가 없습니다.</div>';
+    return;
+  }
+  el.innerHTML = '<table><thead><tr><th>이름</th><th>타입</th><th>커맨드/주소</th><th>상태</th><th>작업</th></tr></thead><tbody>' +
+    servers.map(s => `<tr>
+      <td><strong>${s.name}</strong></td>
+      <td><code>${s.server_type}</code></td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.command || s.address || '-'}</td>
+      <td><span class="${s.enabled ? 'badge-enabled' : 'badge-disabled'}">${s.enabled ? '활성' : '비활성'}</span></td>
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="toggleServer('${s.name}', ${!s.enabled})">${s.enabled ? '비활성화' : '활성화'}</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteServer('${s.name}')">삭제</button>
+      </td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+function openAddServerModal() {
+  if (!currentEnv) { showToast('먼저 환경을 선택하세요.', 'error'); return; }
+  document.getElementById('addServerModal').classList.add('open');
+}
+
+async function addServer() {
+  const body = {
+    name: document.getElementById('srv_name').value,
+    server_type: document.getElementById('srv_type').value,
+    command: document.getElementById('srv_command').value || null,
+    address: document.getElementById('srv_address').value || null,
+    exposed_tools: document.getElementById('srv_tools').value.split(',').map(s => s.trim()).filter(Boolean),
+    allowed_profiles: document.getElementById('srv_profiles').value.split(',').map(s => s.trim()).filter(Boolean),
+    enabled: true,
+  };
+  const res = await fetch('/api/environments/' + currentEnv + '/servers', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  closeModal('addServerModal');
+  showToast('서버 추가: ' + data.server, 'success');
+  loadServers();
+}
+
+async function toggleServer(name, enabled) {
+  await fetch('/api/environments/' + currentEnv + '/servers/' + name + '/toggle?enabled=' + enabled, { method: 'PATCH' });
+  loadServers();
+}
+
+async function deleteServer(name) {
+  if (!confirm('서버 "' + name + '"을 삭제하시겠습니까?')) return;
+  await fetch('/api/environments/' + currentEnv + '/servers/' + name, { method: 'DELETE' });
+  showToast('서버 삭제: ' + name, 'success');
+  loadServers();
+}
+
+// ---- SSH Aliases ----
+async function loadSSHAliases() {
+  if (!currentEnv) return;
+  const res = await fetch('/api/environments/' + currentEnv + '/aliases/ssh');
+  const aliases = await res.json();
+  const el = document.getElementById('sshAliasList');
+  if (!aliases.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">🖥️</div>등록된 SSH alias가 없습니다.</div>';
+    return;
+  }
+  el.innerHTML = '<table><thead><tr><th>Alias</th><th>Host</th><th>Port</th><th>User</th><th>인증</th><th>키 미리보기</th><th>작업</th></tr></thead><tbody>' +
+    aliases.map(a => `<tr>
+      <td><strong>${a.alias}</strong></td>
+      <td>${a.host}</td>
+      <td>${a.port}</td>
+      <td>${a.username}</td>
+      <td>${a.auth_type}</td>
+      <td class="masked">${a.secret_preview || '(미설정)'}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteSSHAlias('${a.alias}')">삭제</button></td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+function openAddSSHModal() {
+  if (!currentEnv) { showToast('먼저 환경을 선택하세요.', 'error'); return; }
+  document.getElementById('addSSHModal').classList.add('open');
+}
+
+function toggleSSHSecret() {
+  const type = document.getElementById('ssh_auth_type').value;
+  document.getElementById('ssh_secret_label').textContent = type === 'key' ? 'SSH Private Key (내용 전체)' : 'Password';
+  document.getElementById('ssh_secret').placeholder = type === 'key' ? '-----BEGIN OPENSSH PRIVATE KEY-----\n...' : '비밀번호 입력';
+}
+
+async function addSSHAlias() {
+  const body = {
+    alias: document.getElementById('ssh_alias').value,
+    host: document.getElementById('ssh_host').value,
+    port: parseInt(document.getElementById('ssh_port').value),
+    username: document.getElementById('ssh_username').value,
+    auth_type: document.getElementById('ssh_auth_type').value,
+    secret_value: document.getElementById('ssh_secret').value,
+  };
+  const res = await fetch('/api/environments/' + currentEnv + '/aliases/ssh', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  closeModal('addSSHModal');
+  showToast('SSH alias 추가: ' + data.alias, 'success');
+  loadSSHAliases();
+}
+
+async function deleteSSHAlias(alias) {
+  if (!confirm('SSH alias "' + alias + '"을 삭제하시겠습니까?')) return;
+  await fetch('/api/environments/' + currentEnv + '/aliases/ssh/' + alias, { method: 'DELETE' });
+  showToast('SSH alias 삭제: ' + alias, 'success');
+  loadSSHAliases();
+}
+
+// ---- Search Aliases ----
+async function loadSearchAliases() {
+  if (!currentEnv) return;
+  const res = await fetch('/api/environments/' + currentEnv + '/aliases/search');
+  const aliases = await res.json();
+  const el = document.getElementById('searchAliasList');
+  if (!aliases.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">🔍</div>등록된 Search alias가 없습니다.</div>';
+    return;
+  }
+  el.innerHTML = '<table><thead><tr><th>Alias</th><th>Provider</th><th>API Key 미리보기</th><th>작업</th></tr></thead><tbody>' +
+    aliases.map(a => `<tr>
+      <td><strong>${a.alias}</strong></td>
+      <td>${a.provider}</td>
+      <td class="masked">${a.secret_preview || '(미설정)'}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteSearchAlias('${a.alias}')">삭제</button></td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+function openAddSearchModal() {
+  if (!currentEnv) { showToast('먼저 환경을 선택하세요.', 'error'); return; }
+  document.getElementById('addSearchModal').classList.add('open');
+}
+
+async function addSearchAlias() {
+  const body = {
+    alias: document.getElementById('search_alias').value,
+    provider: document.getElementById('search_provider').value,
+    api_key: document.getElementById('search_api_key').value,
+  };
+  const res = await fetch('/api/environments/' + currentEnv + '/aliases/search', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  closeModal('addSearchModal');
+  showToast('Search alias 추가: ' + data.alias, 'success');
+  loadSearchAliases();
+}
+
+async function deleteSearchAlias(alias) {
+  if (!confirm('Search alias "' + alias + '"을 삭제하시겠습니까?')) return;
+  await fetch('/api/environments/' + currentEnv + '/aliases/search/' + alias, { method: 'DELETE' });
+  showToast('Search alias 삭제: ' + alias, 'success');
+  loadSearchAliases();
+}
+
+// ---- Policies ----
+async function saveExecPolicy() {
+  if (!currentEnv) { showToast('먼저 환경을 선택하세요.', 'error'); return; }
+  const res = await fetch('/api/environments/' + currentEnv + '/policy');
+  const policy = await res.json();
+  policy.exec.timeout_sec = parseInt(document.getElementById('exec_timeout').value);
+  policy.exec.max_stdout_kb = parseInt(document.getElementById('exec_stdout_kb').value);
+  policy.exec.max_concurrency = parseInt(document.getElementById('exec_concurrency').value);
+  policy.exec.allowed_cwd = document.getElementById('exec_cwd').value;
+  policy.exec.denylist = document.getElementById('exec_denylist').value.split('\n').map(s => s.trim()).filter(Boolean);
+  await fetch('/api/environments/' + currentEnv + '/policy', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(policy)
+  });
+  showToast('Exec 정책 저장 완료', 'success');
+}
+
+async function saveFsPolicy() {
+  if (!currentEnv) { showToast('먼저 환경을 선택하세요.', 'error'); return; }
+  const res = await fetch('/api/environments/' + currentEnv + '/policy');
+  const policy = await res.json();
+  policy.filesystem.allowed_root = document.getElementById('fs_allowed_root').value;
+  policy.filesystem.allow_write = document.getElementById('fs_allow_write').checked;
+  await fetch('/api/environments/' + currentEnv + '/policy', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(policy)
+  });
+  showToast('Filesystem 정책 저장 완료', 'success');
+}
+
+async function saveSearchPolicy() {
+  if (!currentEnv) { showToast('먼저 환경을 선택하세요.', 'error'); return; }
+  const res = await fetch('/api/environments/' + currentEnv + '/policy');
+  const policy = await res.json();
+  policy.search.max_results = parseInt(document.getElementById('search_max_results').value);
+  policy.search.daily_request_cap = parseInt(document.getElementById('search_daily_cap').value);
+  policy.search.monthly_credit_budget = parseFloat(document.getElementById('search_monthly_budget').value);
+  policy.search.allow_advanced_depth = document.getElementById('search_depth').value === 'advanced';
+  await fetch('/api/environments/' + currentEnv + '/policy', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(policy)
+  });
+  showToast('Search 정책 저장 완료', 'success');
+}
+
+async function saveLogsPolicy() {
+  if (!currentEnv) { showToast('먼저 환경을 선택하세요.', 'error'); return; }
+  const res = await fetch('/api/environments/' + currentEnv + '/policy');
+  const policy = await res.json();
+  policy.logs.max_lines = parseInt(document.getElementById('logs_max_lines').value);
+  policy.logs.time_window_minutes = parseInt(document.getElementById('logs_time_window').value);
+  await fetch('/api/environments/' + currentEnv + '/policy', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(policy)
+  });
+  showToast('Logs 정책 저장 완료', 'success');
+}
+
+// ---- Profiles ----
+async function loadProfiles() {
+  if (!currentEnv) return;
+  const res = await fetch('/api/environments/' + currentEnv + '/profiles');
+  const profiles = await res.json();
+  const el = document.getElementById('profileList');
+  if (!profiles.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">👤</div>등록된 프로파일이 없습니다.</div>';
+    return;
+  }
+  el.innerHTML = '<table><thead><tr><th>이름</th><th>설명</th><th>허용 도구</th><th>차단 도구</th><th>작업</th></tr></thead><tbody>' +
+    profiles.map(p => `<tr>
+      <td><strong>${p.name}</strong></td>
+      <td>${p.description || '-'}</td>
+      <td style="font-size:12px">${p.allowed_tools.join(', ') || '(없음)'}</td>
+      <td style="font-size:12px;color:var(--danger)">${p.denied_tools.join(', ') || '(없음)'}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteProfile('${p.name}')">삭제</button></td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+function openAddProfileModal() {
+  if (!currentEnv) { showToast('먼저 환경을 선택하세요.', 'error'); return; }
+  document.getElementById('addProfileModal').classList.add('open');
+}
+
+async function addProfile() {
+  const body = {
+    name: document.getElementById('profile_name').value,
+    description: document.getElementById('profile_desc').value,
+    allowed_tools: document.getElementById('profile_allowed').value.split(',').map(s => s.trim()).filter(Boolean),
+    denied_tools: document.getElementById('profile_denied').value.split(',').map(s => s.trim()).filter(Boolean),
+  };
+  const res = await fetch('/api/environments/' + currentEnv + '/profiles', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  closeModal('addProfileModal');
+  showToast('프로파일 추가: ' + data.profile, 'success');
+  loadProfiles();
+}
+
+async function deleteProfile(name) {
+  if (!confirm('프로파일 "' + name + '"을 삭제하시겠습니까?')) return;
+  await fetch('/api/environments/' + currentEnv + '/profiles/' + name, { method: 'DELETE' });
+  showToast('프로파일 삭제: ' + name, 'success');
+  loadProfiles();
+}
+
+const defaultProfiles = {
+  Researcher: { description: '리서치/조사 전용', allowed: 'web_search,read_file,artifact_save', denied: 'write_file,exec,ssh_run' },
+  Coder: { description: '코드 개발', allowed: 'read_file,write_file,exec,logs', denied: 'ssh_run' },
+  Ops: { description: '운영 모니터링', allowed: 'logs,ssh_read', denied: 'write_file,exec,ssh_act' },
+  Planner: { description: '기획/설계', allowed: 'read_file,web_search,artifact_save', denied: 'exec,ssh_run' },
+};
+
+async function createDefaultProfile(name) {
+  if (!currentEnv) { showToast('먼저 환경을 선택하세요.', 'error'); return; }
+  const p = defaultProfiles[name];
+  const body = {
+    name,
+    description: p.description,
+    allowed_tools: p.allowed.split(','),
+    denied_tools: p.denied.split(','),
+  };
+  await fetch('/api/environments/' + currentEnv + '/profiles', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  showToast('프로파일 생성: ' + name, 'success');
+  loadProfiles();
+}
+
+// ---- Logs ----
+async function loadAuditLogs() {
+  const res = await fetch('/api/logs/audit?limit=100');
+  const logs = await res.json();
+  const el = document.getElementById('auditLogContainer');
+  if (!logs.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:8px">감사 로그가 없습니다.</div>';
+    return;
+  }
+  el.innerHTML = logs.slice().reverse().map(l => {
+    const isSuccess = l.event === 'tool_call_success';
+    return `<div class="log-entry">
+      <span class="log-ts">${l.timestamp || ''}</span>
+      <span class="${isSuccess ? 'log-success' : 'log-failure'}">${isSuccess ? '✓' : '✗'}</span>
+      <span class="log-tool"> ${l.tool_name}</span>
+      ${l.client_profile ? ` <span style="color:var(--accent2)">[${l.client_profile}]</span>` : ''}
+      ${l.server_name ? ` → ${l.server_name}` : ''}
+      ${l.alias ? ` alias:${l.alias}` : ''}
+      ${l.error ? ` <span class="text-danger">${l.error}</span>` : ''}
+    </div>`;
+  }).join('');
+}
+
+async function loadExecutionLogs() {
+  const res = await fetch('/api/logs/execution?limit=100');
+  const logs = await res.json();
+  const el = document.getElementById('execLogContainer');
+  if (!logs.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:8px">실행 로그가 없습니다.</div>';
+    return;
+  }
+  el.innerHTML = logs.slice().reverse().map(l => {
+    return `<div class="log-entry">
+      <span class="log-ts">${l.timestamp || ''}</span>
+      <span class="log-tool">${l.tool_name}</span>
+      → <span>${l.server_name}</span>
+      ${l.error ? ` <span class="text-danger">ERROR: ${l.error}</span>` : ''}
+      ${l.result ? ` <span style="color:var(--muted)">${JSON.stringify(l.result).slice(0, 120)}...</span>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ---- Modals ----
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// ---- Toast ----
+function showToast(msg, type = 'success') {
+  const el = document.getElementById('toast');
+  el.className = 'alert alert-' + type;
+  el.textContent = msg;
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+// ---- Init ----
+window.onload = async () => {
+  await loadEnvList();
+};
+</script>
+</body>
+</html>
