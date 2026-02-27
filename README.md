@@ -153,6 +153,32 @@ curl -X POST http://localhost:8765/mcp/call/dev \
 
 ---
 
+## 코어 서버 자동 등록 (Built-in Core Servers)
+
+Multi-MCP는 **첫 실행 시 6개의 코어 서버를 자동으로 등록**합니다. 별도 설정 없이 Sub-servers 페이지에서 바로 확인할 수 있습니다.
+
+| 코어 서버 | 타입 | 상태 조건 | 필수 설정 |
+|---|---|---|---|
+| `core-filesystem` | filesystem | ✅ 즉시 Ready | 없음 (allowed_root 기본값 사용) |
+| `core-exec` | exec | ✅ 즉시 Ready | 없음 (timeout/cwd 기본값 사용) |
+| `core-ssh` | ssh | ⚠️ SSH alias 등록 필요 | Aliases → SSH Remotes |
+| `core-logs` | logs | ✅ 즉시 Ready | 없음 |
+| `core-search` | search | ⚠️ Tavily API Key 등록 필요 | Aliases → Search API Keys |
+| `core-artifact` | artifact | ✅ 즉시 Ready | 없음 |
+
+**상태 표시:**
+- **✅ Ready** — 즉시 사용 가능
+- **⚠️ Not Configured** — 자격증명 미설정. GUI에서 설정 링크 클릭
+- **⏸ Disabled** — 사용자가 비활성화
+
+**규칙:**
+- 코어 서버는 **삭제 불가** (Disable 토글만 허용)
+- 코어 서버는 `Built-in` 배지로 표시되며 항상 목록 상단에 위치
+- Not Configured 상태에서 도구 호출 시 `4xx` 오류 반환 + audit log 기록
+- 자격증명은 서버(GUI)에서만 입력·저장·사용 (클라이언트 미노출)
+
+---
+
 ## Sub-server Registry
 
 Multi-MCP의 핵심 기능은 기존 MCP 서버를 **Sub-server**로 등록하여 확장하는 것입니다. GUI의 `Sub-servers` 페이지에서 다음을 관리할 수 있습니다:
