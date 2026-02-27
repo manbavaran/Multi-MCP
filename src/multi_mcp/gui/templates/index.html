@@ -161,6 +161,17 @@
     pre.code-block { background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 10px; font-family: monospace; font-size: 12px; overflow-x: auto; color: var(--accent2); }
     .hint-box { background: var(--surface2); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 0 4px 4px 0; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
     .hint-box strong { color: var(--accent); display: block; margin-bottom: 2px; }
+
+    /* Core server status badges */
+    .badge-builtin { background: #1a2a4a; color: #6c63ff; border: 1px solid #3a4a8a; padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; }
+    .badge-status-ready { background: #1a3a2a; color: #2ecc71; border: 1px solid #2a6a3a; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge-status-not_configured { background: #3a2a1a; color: #f39c12; border: 1px solid #6a4a1a; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge-status-disabled { background: #2a2a2a; color: #666; border: 1px solid #444; padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+    .core-row { background: rgba(108, 99, 255, 0.04); }
+    .core-row:hover td { background: rgba(108, 99, 255, 0.08) !important; }
+    .not-configured-banner { background: #2a1a00; border: 1px solid #f39c12; border-radius: 6px; padding: 10px 14px; margin-bottom: 8px; font-size: 12px; color: #f39c12; display: flex; align-items: center; gap: 10px; }
+    .not-configured-banner .setup-link { color: #f39c12; text-decoration: underline; cursor: pointer; font-weight: 600; }
+    .core-status-cell { display: flex; flex-direction: column; gap: 3px; }
   </style>
 </head>
 <body>
@@ -245,6 +256,9 @@
         stdio 서버 예: <code>npx @modelcontextprotocol/server-filesystem /workspace</code>
       </div>
 
+      <!-- Core servers status summary -->
+      <div id="coreStatusSummary" style="margin-bottom:16px;"></div>
+
       <div class="flex-row mb-4">
         <button class="btn btn-primary" onclick="openAddServerModal()">+ 서버 등록</button>
         <button class="btn btn-ghost" onclick="discoverAll()">🔍 전체 디스커버리</button>
@@ -257,7 +271,7 @@
           <thead>
             <tr>
               <th>이름</th><th>타입</th><th>Transport</th><th>Command / Endpoint</th>
-              <th>Tags</th><th>Discovery</th><th>활성</th><th>작업</th>
+              <th>Tags</th><th>상태</th><th>Discovery</th><th>활성</th><th>작업</th>
             </tr>
           </thead>
           <tbody id="serverList"></tbody>
@@ -848,6 +862,68 @@ async function createEnv(env) {
 }
 
 // ============================================================
+// Core status summary panel
+// ============================================================
+async function renderCoreStatusSummary(servers) {
+  const el = document.getElementById('coreStatusSummary');
+  if (!el) return;
+
+  const cores = servers.filter(s => s.is_core);
+  if (!cores.length) { el.innerHTML = ''; return; }
+
+  const notConfigured = cores.filter(s => s.core_status && s.core_status.status === 'not_configured');
+  const disabled = cores.filter(s => s.core_status && s.core_status.status === 'disabled');
+  const ready = cores.filter(s => !s.core_status || s.core_status.status === 'ready');
+
+  let html = `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:4px;">`;
+  html += `<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 16px; flex:1; min-width:160px;">`;
+  html += `<div style="font-size:11px; color:var(--muted); margin-bottom:4px;">Built-in 코어 서버</div>`;
+  html += `<div style="font-size:18px; font-weight:700;">${cores.length}개</div>`;
+  html += `</div>`;
+
+  html += `<div style="background:var(--surface); border:1px solid #2a6a3a; border-radius:6px; padding:10px 16px; flex:1; min-width:160px;">`;
+  html += `<div style="font-size:11px; color:var(--muted); margin-bottom:4px;">✅ Ready</div>`;
+  html += `<div style="font-size:18px; font-weight:700; color:#2ecc71;">${ready.length}개</div>`;
+  html += `</div>`;
+
+  if (notConfigured.length) {
+    html += `<div style="background:#2a1a00; border:1px solid #f39c12; border-radius:6px; padding:10px 16px; flex:1; min-width:160px;">`;
+    html += `<div style="font-size:11px; color:var(--muted); margin-bottom:4px;">⚠️ 설정 필요</div>`;
+    html += `<div style="font-size:18px; font-weight:700; color:#f39c12;">${notConfigured.length}개</div>`;
+    html += `<div style="font-size:11px; color:#f39c12; margin-top:4px;">${notConfigured.map(s => s.name.replace('core-', '')).join(', ')}</div>`;
+    html += `</div>`;
+  }
+
+  if (disabled.length) {
+    html += `<div style="background:var(--surface); border:1px solid #444; border-radius:6px; padding:10px 16px; flex:1; min-width:160px;">`;
+    html += `<div style="font-size:11px; color:var(--muted); margin-bottom:4px;">⏸ 비활성화</div>`;
+    html += `<div style="font-size:18px; font-weight:700; color:#666;">${disabled.length}개</div>`;
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+
+  // Warning banners for not-configured cores
+  for (const s of notConfigured) {
+    const cs = s.core_status || {};
+    html += `<div class="not-configured-banner">`;
+    html += `<span style="font-size:16px;">⚠️</span>`;
+    html += `<div style="flex:1;">`;
+    html += `<strong>${s.name}</strong>: ${cs.credential_hint || '설정이 필요합니다.'}`;
+    if (cs.missing_items && cs.missing_items.length) {
+      html += ` &mdash; 필수: ${cs.missing_items.map(i => `<code>${i}</code>`).join(', ')}`;
+    }
+    html += `</div>`;
+    if (cs.credential_setup_tab) {
+      html += `<a class="setup-link" onclick="showPage('${cs.credential_setup_tab}'); return false;">→ 지금 설정하기</a>`;
+    }
+    html += `</div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+// ============================================================
 // Sub-servers
 // ============================================================
 async function loadServers() {
@@ -856,7 +932,12 @@ async function loadServers() {
   const servers = await res.json();
   serverCache = {};
   servers.forEach(s => serverCache[s.name] = s);
-  document.getElementById('serverCount').textContent = `총 ${servers.length}개`;
+  const coreCount = servers.filter(s => s.is_core).length;
+  const userCount = servers.length - coreCount;
+  document.getElementById('serverCount').textContent = `열 ${servers.length}개 (Built-in ${coreCount}개 + 사용자 등록 ${userCount}개)`;
+
+  // Render core status summary banners
+  await renderCoreStatusSummary(servers);
 
   const el = document.getElementById('serverList');
   if (!servers.length) {
@@ -877,17 +958,44 @@ async function loadServers() {
       : discStatus === 'disabled' ? `<span class="disc-disabled">—</span>`
       : `<span class="disc-pending">⏳ 미실행</span>`;
 
-    const tags = (s.tags || []).map(t => `<span class="tag">${t}</span>`).join('');
+    // Filter out internal tags for display (hide 'core', 'builtin')
+    const displayTags = (s.tags || []).filter(t => t !== 'core' && t !== 'builtin');
+    const tags = displayTags.map(t => `<span class="tag">${t}</span>`).join('');
     const cmd = s.command || s.endpoint || '<span class="text-muted">builtin</span>';
     const typeColors = { filesystem:'#2ecc71', exec:'#f39c12', ssh:'#e74c3c', search:'#6c63ff', logs:'#888', artifact:'#4ecdc4', other:'#888' };
     const typeColor = typeColors[s.server_type] || '#888';
 
-    return `<tr>
-      <td><a href="#" onclick="showServerDetail('${s.name}'); return false;" style="font-weight:600;">${s.name}</a></td>
+    // Core server status badge
+    const isCore = s.is_core || false;
+    const cs = s.core_status || {};
+    const coreStatus = cs.status || (s.enabled ? 'ready' : 'disabled');
+    const statusLabels = { ready: '✅ Ready', not_configured: '⚠️ 미설정', disabled: '⏸ 비활성화' };
+    const statusLabel = statusLabels[coreStatus] || coreStatus;
+    const statusBadge = `<span class="badge-status-${coreStatus}">${statusLabel}</span>`;
+    const builtinBadge = isCore ? `<span class="badge-builtin">Built-in</span> ` : '';
+
+    // Setup link for not_configured cores
+    let setupLink = '';
+    if (isCore && coreStatus === 'not_configured' && cs.credential_setup_tab) {
+      setupLink = `<br><a href="#" onclick="showPage('${cs.credential_setup_tab}'); return false;" style="font-size:11px; color:var(--warn);">&#8594; 설정하러 가기</a>`;
+    }
+
+    // Action buttons: core servers cannot be deleted
+    const deleteBtn = isCore
+      ? `<button class="btn btn-ghost btn-sm" disabled title="Built-in 코어 서버는 삭제할 수 없습니다" style="opacity:0.3;cursor:not-allowed;">🗑️</button>`
+      : `<button class="btn btn-danger btn-sm" onclick="deleteServer('${s.name}')" title="삭제">🗑️</button>`;
+
+    const rowClass = isCore ? 'core-row' : '';
+
+    return `<tr class="${rowClass}">
+      <td>
+        ${builtinBadge}<a href="#" onclick="showServerDetail('${s.name}'); return false;" style="font-weight:600;">${s.name}</a>
+      </td>
       <td><span class="badge-type" style="color:${typeColor}; border:1px solid ${typeColor}33;">${s.server_type}</span></td>
       <td><span class="badge-transport">${s.transport}</span></td>
-      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:12px;" title="${cmd}">${cmd}</td>
+      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;font-size:12px;" title="${s.command || s.endpoint || 'builtin'}">${cmd}</td>
       <td>${tags || '<span class="text-muted">—</span>'}</td>
+      <td class="core-status-cell">${statusBadge}${setupLink}</td>
       <td style="cursor:pointer;" onclick="discoverServer('${s.name}')" title="클릭하여 디스커버리 실행">${discText}</td>
       <td>
         <label class="toggle">
@@ -897,7 +1005,7 @@ async function loadServers() {
       </td>
       <td style="white-space:nowrap;">
         <button class="btn btn-ghost btn-sm" onclick="openEditServerModal('${s.name}')" title="수정">✏️</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteServer('${s.name}')" title="삭제">🗑️</button>
+        ${deleteBtn}
       </td>
     </tr>`;
   }).join('');
@@ -995,13 +1103,26 @@ async function toggleServer(name, enabled) {
   showToast(`${name} ${enabled ? '활성화' : '비활성화'}`, 'success');
   loadServers();
 }
-
 async function deleteServer(name) {
+  // Guard: core servers cannot be deleted
+  const s = serverCache[name];
+  if (s && s.is_core) {
+    showToast(`🛡️ Built-in 코어 서버(${name})는 삭제할 수 없습니다. Disable 토글만 허용됩니다.`, 'error');
+    return;
+  }
   if (!confirm(`서버 "${name}"을 삭제하시겠습니까?`)) return;
-  await fetch(`/api/environments/${currentEnv}/servers/${name}`, { method: 'DELETE' });
-  showToast('서버 삭제: ' + name, 'success');
-  closeDetailPanel();
-  loadServers();
+
+  try {
+    const res = await fetch(`/api/environments/${currentEnv}/servers/${name}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const e = await res.json();
+      showToast(e.detail || '삭제 실패', 'error');
+      return;
+    }
+    showToast('서버 삭제: ' + name, 'success');
+    closeDetailPanel();
+    loadServers();
+  } catch(e) { showToast(e.message, 'error'); }
 }
 
 async function discoverServer(name) {
@@ -1033,19 +1154,45 @@ async function showServerDetail(name) {
   if (!s) return;
 
   document.getElementById('serverDetailPanel').style.display = 'block';
-  document.getElementById('detailTitle').innerHTML = `🔌 ${name} <span class="badge-transport">${s.transport}</span> <span class="badge-type">${s.server_type}</span>`;
+  const isCore = s.is_core || false;
+  const builtinBadge = isCore ? `<span class="badge-builtin" style="margin-right:6px;">Built-in</span>` : '';
+  document.getElementById('detailTitle').innerHTML = `${builtinBadge}🔌 ${name} <span class="badge-transport">${s.transport}</span> <span class="badge-type">${s.server_type}</span>`;
 
   // Scroll to detail panel
   document.getElementById('serverDetailPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   // Info tab
   const disc = s.discovery || {};
+  const cs = s.core_status || {};
+  const coreStatus = cs.status || (s.enabled ? 'ready' : 'disabled');
+  const statusLabels = { ready: '✅ Ready', not_configured: '⚠️ 미설정 (Not Configured)', disabled: '⏸ 비활성화' };
+  const statusLabel = statusLabels[coreStatus] || coreStatus;
+
+  // Core status alert box
+  let coreStatusHtml = '';
+  if (isCore) {
+    if (coreStatus === 'not_configured') {
+      coreStatusHtml = `<div class="not-configured-banner">
+        <span style="font-size:18px;">⚠️</span>
+        <div>
+          <strong>자격증명 미설정</strong> — ${cs.credential_hint || '설정이 필요합니다.'}<br>
+          필수 항목: ${(cs.missing_items||[]).map(i=>`<code>${i}</code>`).join(', ')}
+          ${cs.credential_setup_tab ? `<br><a class="setup-link" onclick="showPage('${cs.credential_setup_tab}'); closeDetailPanel(); return false;">→ ${cs.credential_setup_tab} 탭에서 설정하기</a>` : ''}
+        </div>
+      </div>`;
+    } else if (coreStatus === 'ready') {
+      coreStatusHtml = `<div class="alert alert-success" style="margin-bottom:12px;">✅ 코어 서버가 정상 작동 중입니다.</div>`;
+    }
+  }
+
   document.getElementById('detailTab-info').innerHTML = `
+    ${coreStatusHtml}
     <div class="form-row-3" style="gap:8px; margin-bottom:12px;">
       <div><label style="font-size:11px;color:var(--muted);">환경 범위</label><div style="margin-top:4px;">${(s.env_scope||[]).join(', ')}</div></div>
       <div><label style="font-size:11px;color:var(--muted);">버전 핀</label><div style="margin-top:4px; font-family:monospace; font-size:12px;">${s.version_pin || '—'}</div></div>
       <div><label style="font-size:11px;color:var(--muted);">허용 프로파일</label><div style="margin-top:4px;">${(s.allowed_profiles||[]).map(p=>`<span class="tag">${p}</span>`).join('')}</div></div>
     </div>
+    ${isCore ? `<div style="margin-bottom:8px;"><label style="font-size:11px;color:var(--muted);">코어 상태</label><div style="margin-top:4px;"><span class="badge-status-${coreStatus}">${statusLabel}</span></div></div>` : ''}
     ${s.command ? `<div style="margin-bottom:8px;"><label style="font-size:11px;color:var(--muted);">Command</label><pre class="code-block" style="margin-top:4px;">${s.command}</pre></div>` : ''}
     ${s.endpoint ? `<div style="margin-bottom:8px;"><label style="font-size:11px;color:var(--muted);">Endpoint</label><code>${s.endpoint}</code></div>` : ''}
     ${s.description ? `<div style="margin-bottom:8px; color:var(--muted); font-size:13px;">${s.description}</div>` : ''}
@@ -1055,7 +1202,8 @@ async function showServerDetail(name) {
     ${disc.error_message ? `<div class="alert alert-error" style="margin-top:8px;">${disc.error_message}</div>` : ''}
     <div style="margin-top:12px;">
       <button class="btn btn-ghost btn-sm" onclick="discoverServer('${name}')">🔍 디스커버리 실행</button>
-      <button class="btn btn-ghost btn-sm" onclick="openEditServerModal('${name}')">✏️ 수정</button>
+      ${isCore ? '' : `<button class="btn btn-ghost btn-sm" onclick="openEditServerModal('${name}')">✏️ 수정</button>`}
+      ${isCore ? `<button class="btn btn-ghost btn-sm" onclick="openEditServerModal('${name}')">⚙️ 설정 조정</button>` : ''}
     </div>`;
 
   // Tools tab
