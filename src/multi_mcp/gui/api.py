@@ -38,6 +38,11 @@ from multi_mcp.models.config import (
     SubServerConfig,
     TransportType,
 )
+from multi_mcp.models.bootstrap import (
+    CORE_SERVER_NAMES,
+    enrich_server_dict,
+    is_core_server,
+)
 from multi_mcp.models.secrets import SecretStore
 from multi_mcp.models.settings_manager import SettingsManager
 
@@ -66,7 +71,7 @@ def _save_env(cfg: EnvironmentConfig) -> None:
     _settings.save(cfg)
 
 
-def _server_to_dict(s: SubServerConfig) -> dict[str, Any]:
+def _server_to_dict(s: SubServerConfig, cfg: EnvironmentConfig | None = None) -> dict[str, Any]:
     d = s.model_dump(exclude={"adapter"})
     # Convert discovery datetimes to ISO strings for JSON serialisation
     if d.get("discovery"):
@@ -74,6 +79,12 @@ def _server_to_dict(s: SubServerConfig) -> dict[str, Any]:
         for key in ("last_attempted_at", "last_succeeded_at"):
             if disc.get(key) and hasattr(disc[key], "isoformat"):
                 disc[key] = disc[key].isoformat()
+    # Enrich with core-server metadata (is_core, core_status)
+    if cfg is not None:
+        d = enrich_server_dict(d, s, cfg)
+    else:
+        d["is_core"] = is_core_server(s.name)
+        d["core_status"] = None
     return d
 
 
@@ -109,7 +120,11 @@ def get_environment(env: str) -> dict[str, Any]:
 @router.get("/environments/{env}/servers")
 def list_servers(env: str) -> list[dict[str, Any]]:
     cfg = _get_env(env)
-    return [_server_to_dict(s) for s in cfg.sub_servers]
+    # Core servers are always shown first, then user-defined servers
+    cores = [s for s in cfg.sub_servers if is_core_server(s.name)]
+    user_defined = [s for s in cfg.sub_servers if not is_core_server(s.name)]
+    ordered = cores + user_defined
+    return [_server_to_dict(s, cfg) for s in ordered]
 
 
 class SubServerCreate(BaseModel):
@@ -133,6 +148,13 @@ class SubServerCreate(BaseModel):
 def add_server(env: str, body: SubServerCreate) -> dict[str, Any]:
     """Register a new sub-server (or replace an existing one with the same name)."""
     cfg = _get_env(env)
+
+    # Prevent user-defined servers from using reserved core names
+    if is_core_server(body.name) and "core" in body.tags:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{body.name}' is a reserved core server name.",
+        )
 
     # Validate transport ↔ command/endpoint consistency
     if body.transport == TransportType.stdio and not body.command:
@@ -172,7 +194,7 @@ def get_server(env: str, name: str) -> dict[str, Any]:
     cfg = _get_env(env)
     for s in cfg.sub_servers:
         if s.name == name:
-            return _server_to_dict(s)
+            return _server_to_dict(s, cfg)
     raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
 
 
@@ -211,6 +233,15 @@ def update_server(env: str, name: str, body: SubServerCreate) -> dict[str, Any]:
 
 @router.delete("/environments/{env}/servers/{name}")
 def delete_server(env: str, name: str) -> dict[str, str]:
+    # Core servers cannot be deleted — only disabled
+    if is_core_server(name):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Core server '{name}' cannot be deleted. "
+                "Use the Disable toggle to deactivate it."
+            ),
+        )
     cfg = _get_env(env)
     before = len(cfg.sub_servers)
     cfg.sub_servers = [s for s in cfg.sub_servers if s.name != name]
@@ -229,6 +260,64 @@ def toggle_server(env: str, name: str, enabled: bool) -> dict[str, Any]:
             _save_env(cfg)
             return {"status": "ok", "server": name, "enabled": enabled}
     raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+
+
+# ---------------------------------------------------------------------------
+# Core server status
+# ---------------------------------------------------------------------------
+
+@router.get("/environments/{env}/core-status")
+def get_all_core_status(env: str) -> list[dict[str, Any]]:
+    """
+    Return the readiness status of all 6 core servers for a given environment.
+    Used by the GUI to show Ready / Not configured / Disabled badges.
+    """
+    from multi_mcp.models.bootstrap import compute_core_status, CORE_SERVER_NAMES
+
+    cfg = _get_env(env)
+    result = []
+    for s in cfg.sub_servers:
+        if is_core_server(s.name):
+            status_info = compute_core_status(s, cfg)
+            result.append({
+                "name": s.name,
+                "server_type": s.server_type.value,
+                "enabled": s.enabled,
+                "is_core": True,
+                **status_info,
+            })
+    return result
+
+
+@router.get("/environments/{env}/servers/{name}/status")
+def get_server_status(env: str, name: str) -> dict[str, Any]:
+    """
+    Return the readiness status of a single server.
+    For core servers this includes credential hints.
+    """
+    from multi_mcp.models.bootstrap import compute_core_status
+
+    cfg = _get_env(env)
+    server = next((s for s in cfg.sub_servers if s.name == name), None)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+
+    if is_core_server(name):
+        status_info = compute_core_status(server, cfg)
+    else:
+        status_info = {
+            "status": "ready" if server.enabled else "disabled",
+            "credential_hint": None,
+            "credential_setup_tab": None,
+            "missing_items": [],
+        }
+
+    return {
+        "name": name,
+        "enabled": server.enabled,
+        "is_core": is_core_server(name),
+        **status_info,
+    }
 
 
 # ---------------------------------------------------------------------------
