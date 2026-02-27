@@ -18,7 +18,9 @@ from typing import Any
 from multi_mcp.enforcement.middleware import EnforcementMiddleware
 from multi_mcp.logging.audit import AuditLogger
 from multi_mcp.logging.execution import ExecutionLogger
+from multi_mcp.models.bootstrap import compute_core_status, is_core_server
 from multi_mcp.models.config import (
+    EnvironmentConfig,
     RoutingTable,
     SubServerConfig,
     ToolCallRequest,
@@ -145,12 +147,14 @@ class MCPHub:
         audit_logger: AuditLogger,
         exec_logger: ExecutionLogger,
         env_name: str = "dev",
+        env_config: EnvironmentConfig | None = None,
     ) -> None:
         self.registry = registry
         self.enforcement = enforcement
         self.audit_logger = audit_logger
         self.exec_logger = exec_logger
         self.env_name = env_name
+        self.env_config = env_config  # used for core status checks
 
     async def call_tool(
         self,
@@ -183,6 +187,35 @@ class MCPHub:
                 error=f"No enabled sub-server exposes tool '{tool_name}' for profile '{client_profile}'",
                 env=self.env_name,
             )
+
+        # --- Core server Not Configured check ---
+        # If the server is a core server that requires credentials and they are
+        # not yet configured, block the call immediately and log to audit.
+        if is_core_server(server.name) and self.env_config is not None:
+            status_info = compute_core_status(server, self.env_config)
+            if status_info["status"] == "not_configured":
+                hint = status_info.get("credential_hint", "Credentials not configured.")
+                missing = status_info.get("missing_items", [])
+                self.audit_logger.log_failure(
+                    request, client_profile,
+                    f"core_server_not_configured: {server.name}",
+                    extra={
+                        "env": self.env_name,
+                        "server": server.name,
+                        "missing_items": missing,
+                        # NOTE: no secrets are logged here
+                    },
+                )
+                return ToolCallResponse(
+                    tool_name=tool_name,
+                    success=False,
+                    error=(
+                        f"Core server '{server.name}' is not configured. "
+                        f"{hint} Missing: {', '.join(missing)}"
+                    ),
+                    routed_to=server.name,
+                    env=self.env_name,
+                )
 
         # --- Pre-call enforcement ---
         try:

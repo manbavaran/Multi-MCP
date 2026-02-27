@@ -106,16 +106,28 @@ class AuditLogger:
         error: str,
         extra: dict[str, Any] | None = None,
     ) -> None:
-        self._write({
-            "event": "tool_call_failure",
+        ex = extra or {}
+        # Determine event type: separate not_configured from generic failures
+        if error.startswith("core_server_not_configured:"):
+            event = "core_not_configured"
+        else:
+            event = "tool_call_failure"
+
+        entry: dict[str, Any] = {
+            "event": event,
             "tool_name": request.tool_name,
             "client_profile": client_profile,
-            "server_name": (extra or {}).get("server"),
-            "env": (extra or {}).get("env"),
+            "server_name": ex.get("server"),
+            "env": ex.get("env"),
             "error": _sanitise(error),
             "alias": self._extract_alias(request),
             "request_id": request.request_id,
-        })
+        }
+        # For not_configured events, include which items are missing (no secrets)
+        if event == "core_not_configured" and ex.get("missing_items"):
+            entry["missing_items"] = ex["missing_items"]
+
+        self._write(entry)
 
     def log_discovery(
         self,

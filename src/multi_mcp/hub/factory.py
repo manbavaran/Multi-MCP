@@ -54,6 +54,8 @@ class HubFactory:
             enforcement=EnforcementMiddleware(),
             audit_logger=AuditLogger(log_dir=audit_log_dir),
             exec_logger=ExecutionLogger(log_dir=exec_log_dir),
+            env_name=env_config.name.value,
+            env_config=env_config,  # passed for core server status checks
         )
 
     @staticmethod
