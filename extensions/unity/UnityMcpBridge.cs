@@ -43,7 +43,7 @@ public static class UnityMcpBridge
     // ======== Config ========
     private static int Port = 23457;
     private static string AuthToken = "";
-    private static bool AutoStart = false;
+    private static bool AutoStart = true;  // default: auto-start on Editor load
 
     // ======== Server State ========
     private static HttpListener _listener;
@@ -59,7 +59,7 @@ public static class UnityMcpBridge
     {
         Port      = EditorPrefs.GetInt   ("MultiMCP.Unity.Port",      23457);
         AuthToken = EditorPrefs.GetString("MultiMCP.Unity.Token",     "");
-        AutoStart = EditorPrefs.GetBool  ("MultiMCP.Unity.AutoStart", false);
+        AutoStart = EditorPrefs.GetBool  ("MultiMCP.Unity.AutoStart", true);  // default true
 
         // Stop cleanly before the next domain reload
         AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
@@ -73,9 +73,9 @@ public static class UnityMcpBridge
         else
         {
             // Remind the user to start the server manually
-            Debug.Log("[UnityMcpBridge] v2.1 loaded. Server is NOT running.\n" +
-                      "  ▶  To start: Multi-MCP  →  Unity Bridge  →  Start\n" +
-                      "  ▶  To auto-start: Multi-MCP  →  Unity Bridge  →  Settings  →  enable Auto Start");
+            Debug.Log("[UnityMcpBridge] v2.1 loaded. AutoStart is disabled — server is NOT running.\n" +
+                      "  ▶  To start now:    Multi-MCP  →  Unity Bridge  →  Start\n" +
+                      "  ▶  To enable auto:  Multi-MCP  →  Unity Bridge  →  Settings  →  enable Auto Start on Editor Load");
         }
     }
 
@@ -1286,7 +1286,7 @@ public class UnityMcpBridgeSettingsWindow : EditorWindow
     {
         _port      = EditorPrefs.GetInt   ("MultiMCP.Unity.Port",      23457);
         _token     = EditorPrefs.GetString("MultiMCP.Unity.Token",     "");
-        _autoStart = EditorPrefs.GetBool  ("MultiMCP.Unity.AutoStart", false);
+        _autoStart = EditorPrefs.GetBool  ("MultiMCP.Unity.AutoStart", true);  // default true
     }
 
     private void OnGUI()
