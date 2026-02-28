@@ -124,8 +124,15 @@ class DiscoveryService:
 
     async def _fetch_http(self, server: SubServerConfig) -> list[DiscoveredTool]:
         """
-        Call GET {endpoint}/tools/list on an HTTP MCP server.
-        Falls back to POST {endpoint}/tools/list with JSON-RPC body.
+        Call tools/list on an HTTP MCP server (JSON-RPC 2.0 over HTTP).
+
+        Strategy (in order):
+          1. POST {endpoint}          — MCP JSON-RPC 2.0 (Unity bridge, most HTTP servers)
+          2. POST {endpoint}/         — some servers add trailing slash
+          3. GET  {endpoint}/tools/list — REST-style fallback
+
+        The endpoint field should be the full MCP path, e.g.:
+          http://127.0.0.1:23457/mcp
         """
         if not server.endpoint:
             raise ValueError("HTTP transport requires 'endpoint' to be set")
@@ -135,17 +142,35 @@ class DiscoveryService:
         except ImportError:
             raise RuntimeError("httpx not installed. Run: pip install httpx")
 
+        # Normalise: strip trailing slash so we control the exact URL
         base = server.endpoint.rstrip("/")
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # Try JSON-RPC style first (most MCP HTTP servers use this)
-            payload = {"jsonrpc": "2.0", "method": "tools/list", "id": 1, "params": {}}
-            resp = await client.post(f"{base}/", json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                return _parse_tools_list_response(data)
+        payload = {"jsonrpc": "2.0", "method": "tools/list", "id": 1, "params": {}}
 
-            # Fallback: REST-style GET
-            resp = await client.get(f"{base}/tools")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Strategy 1: POST directly to the endpoint (Unity bridge: POST /mcp)
+            try:
+                resp = await client.post(base, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if "result" in data or "tools" in data:
+                        return _parse_tools_list_response(data)
+            except Exception:  # noqa: BLE001
+                pass
+
+            # Strategy 2: POST with trailing slash
+            try:
+                resp = await client.post(f"{base}/", json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if "result" in data or "tools" in data:
+                        return _parse_tools_list_response(data)
+            except Exception:  # noqa: BLE001
+                pass
+
+            # Strategy 3: REST-style GET /tools/list
+            # Derive base host from endpoint (strip the last path segment)
+            host_base = base.rsplit("/", 1)[0] if "/" in base.split("://", 1)[-1] else base
+            resp = await client.get(f"{host_base}/tools/list")
             resp.raise_for_status()
             data = resp.json()
             return _parse_tools_list_response(data)
@@ -319,6 +344,10 @@ def _parse_tools_list_response(data: dict[str, Any]) -> list[DiscoveredTool]:
     """
     Parse a JSON-RPC tools/list response into DiscoveredTool objects.
 
+    Handles two schema key conventions:
+      - "inputSchema"  (camelCase) — MCP official spec, Claude Desktop, etc.
+      - "input_schema" (snake_case) — Unity MCP Bridge v2, some custom servers
+
     MCP spec response shape:
       {"jsonrpc": "2.0", "id": N, "result": {"tools": [{"name": ..., "description": ..., "inputSchema": {...}}, ...]}}
     """
@@ -330,10 +359,12 @@ def _parse_tools_list_response(data: dict[str, Any]) -> list[DiscoveredTool]:
 
     tools = []
     for t in tools_raw:
+        # Accept both camelCase (MCP spec) and snake_case (Unity bridge, custom servers)
+        schema = t.get("inputSchema") or t.get("input_schema") or {}
         tools.append(DiscoveredTool(
             name=t.get("name", ""),
             description=t.get("description", ""),
-            input_schema=t.get("inputSchema", {}),
+            input_schema=schema,
         ))
     return tools
 

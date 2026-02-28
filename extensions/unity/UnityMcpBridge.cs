@@ -157,10 +157,21 @@ public static class UnityMcpBridge
             }
         }
 
-        // MCP JSON-RPC 2.0
+        // MCP JSON-RPC 2.0 — POST /mcp
         if (req.HttpMethod == "POST" && req.Url.AbsolutePath == "/mcp")
         {
             WriteJson(res, 200, HandleJsonRpc(ReadBody(req)));
+            return;
+        }
+
+        // Browser-friendly GET /mcp — explain that POST is required
+        if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/mcp")
+        {
+            WriteJson(res, 200,
+                $"{{\"status\":\"ok\",\"service\":\"unity-mcp-bridge\",\"version\":\"2\"," +
+                $"\"note\":\"This endpoint requires POST with JSON-RPC 2.0 body. Use Multi-MCP GUI to register: transport=http endpoint=http://127.0.0.1:{Port}/mcp\"," +
+                $"\"health\":\"GET http://127.0.0.1:{Port}/health\"," +
+                $"\"tools_list\":\"POST http://127.0.0.1:{Port}/mcp with body={{jsonrpc:2.0,method:tools/list,id:1,params:{{}}}}\"}}");
             return;
         }
 
@@ -233,7 +244,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.manage_gameobject"",
       ""description"": ""Create/find/delete/update GameObjects in the active scene (action-based)"",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""action"": { ""type"": ""string"", ""enum"": [""find"",""get"",""create"",""delete"",""set_active"",""set_transform""] },
@@ -252,7 +263,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.manage_scene"",
       ""description"": ""Open/save/list scenes"",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""action"": { ""type"": ""string"", ""enum"": [""list_open"",""save_active"",""open""] },
@@ -264,7 +275,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.manage_components"",
       ""description"": ""List/add/remove components on a GameObject"",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""action"": { ""type"": ""string"", ""enum"": [""list"",""add"",""remove""] },
@@ -277,7 +288,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.get_component_property"",
       ""description"": ""Read a field or property value from a component on a GameObject. Supports public fields, serialized fields, and public properties. Use this to observe game state (HP, score, flags, etc.)"",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""path"":      { ""type"": ""string"", ""description"": ""Hierarchy path of the GameObject"" },
@@ -290,7 +301,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.set_component_property"",
       ""description"": ""Write a value to a field or property on a component. Use to modify game state (HP, score, speed, flags, etc.)"",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""path"":      { ""type"": ""string"" },
@@ -304,7 +315,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.call_component_method"",
       ""description"": ""Invoke a public method on a component. Use to trigger game actions (Attack, OpenDoor, AddItem, StartQuest, etc.)"",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""path"":      { ""type"": ""string"" },
@@ -318,7 +329,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.send_event"",
       ""description"": ""Send a named message to a component via SendMessage (no return value). Useful for triggering event-driven behaviours."",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""path"":    { ""type"": ""string"" },
@@ -331,7 +342,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.control_playmode"",
       ""description"": ""Control Unity Editor play mode and time. Use to start/stop/pause the game, advance frames, or change time scale for simulation."",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""action"":     { ""type"": ""string"", ""enum"": [""enter"",""exit"",""pause"",""resume"",""step"",""get_state"",""set_timescale""] },
@@ -343,7 +354,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.query_scene"",
       ""description"": ""Return a structured snapshot of the active scene hierarchy. Use as an observation step before planning actions. Can filter by tag, layer, or component type."",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""filter_tag"":       { ""type"": ""string"", ""description"": ""Only include GameObjects with this tag (e.g. Player, Enemy)"" },
@@ -357,7 +368,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.manage_asset"",
       ""description"": ""Find assets in the AssetDatabase and instantiate prefabs into the scene."",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""action"":      { ""type"": ""string"", ""enum"": [""find"",""instantiate""] },
@@ -372,7 +383,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.execute_menu_item"",
       ""description"": ""Execute a Unity Editor menu item by path (e.g. File/Save Project)"",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": { ""menu"": { ""type"": ""string"" } },
         ""required"": [""menu""]
@@ -381,7 +392,7 @@ public static class UnityMcpBridge
     {
       ""name"": ""unity.read_console"",
       ""description"": ""Tail the Unity Editor log. Use after actions to check for errors or confirm success."",
-      ""input_schema"": {
+      ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""max_lines"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 2000 },
