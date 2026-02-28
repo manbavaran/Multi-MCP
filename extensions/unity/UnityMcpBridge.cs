@@ -1,4 +1,4 @@
-// Assets/Editor/UnityMcpBridge.cs  (v2.1 — Thread-safe, Domain-Reload-safe)
+// Assets/Editor/UnityMcpBridge.cs  (v2.2 — Thread-safe, Domain-Reload-safe, Visual Automation)
 // Multi-MCP compatible Unity Editor bridge (HTTP + MCP JSON-RPC 2.0)
 //
 // FIXES in v2.1:
@@ -8,12 +8,21 @@
 //  * RunOnMainThread uses ManualResetEventSlim instead of Thread.Sleep polling
 //  * StopServer is idempotent and safe to call from any thread
 //
-// Tools (12):
+// NEW in v2.2 — Visual Automation (AI can SEE and ACT):
+//  * unity.capture_screenshot  — Game View → base64 PNG (AI 눈)
+//  * unity.render_camera       — 임의 카메라 RenderTexture → base64 PNG
+//  * unity.find_ui_elements    — 화면의 UI 요소 목록 + 위치 반환
+//  * unity.simulate_input      — 마우스 클릭/이동/드래그, 키보드 입력 시뮬레이션
+//  * unity.ui_raycast          — 화면 좌표 → 히트된 UI/3D 오브젝트 반환
+//
+// Tools (17):
 //  unity.manage_gameobject, unity.manage_scene, unity.manage_components,
 //  unity.get_component_property, unity.set_component_property,
 //  unity.call_component_method, unity.send_event, unity.control_playmode,
 //  unity.query_scene, unity.manage_asset, unity.execute_menu_item,
-//  unity.read_console
+//  unity.read_console,
+//  unity.capture_screenshot, unity.render_camera, unity.find_ui_elements,
+//  unity.simulate_input, unity.ui_raycast
 //
 // MCP endpoint: POST /mcp  (JSON-RPC 2.0)
 // Health:       GET  /health
@@ -33,7 +42,9 @@ using System.Threading;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -495,6 +506,77 @@ public static class UnityMcpBridge
           ""filter"":    { ""type"": ""string"" }
         }
       }
+    },
+    {
+      ""name"": ""unity.capture_screenshot"",
+      ""description"": ""Capture the current Game View as a base64-encoded PNG image. Use this as the AI's eyes — call before and after actions to observe the game state visually. Returns image_base64 (PNG), width, height."",
+      ""inputSchema"": {
+        ""type"": ""object"",
+        ""properties"": {
+          ""super_size"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 4, ""default"": 1,
+                         ""description"": ""Resolution multiplier (1=native, 2=2x, etc.)"" },
+          ""include_ui"": { ""type"": ""boolean"", ""default"": true,
+                          ""description"": ""Whether to include UI overlay in the screenshot"" }
+        }
+      }
+    },
+    {
+      ""name"": ""unity.render_camera"",
+      ""description"": ""Render a specific camera to a RenderTexture and return as base64 PNG. Useful for capturing a specific viewpoint (minimap, security cam, etc.) without changing the main Game View."",
+      ""inputSchema"": {
+        ""type"": ""object"",
+        ""properties"": {
+          ""camera_name"": { ""type"": ""string"", ""description"": ""Name of the Camera GameObject (default: Main Camera)"" },
+          ""width"":       { ""type"": ""integer"", ""minimum"": 64, ""maximum"": 2048, ""default"": 512 },
+          ""height"":      { ""type"": ""integer"", ""minimum"": 64, ""maximum"": 2048, ""default"": 512 }
+        }
+      }
+    },
+    {
+      ""name"": ""unity.find_ui_elements"",
+      ""description"": ""Find all active UI elements (Button, Text, Image, InputField, Toggle, Slider) in the scene and return their names, types, screen positions, sizes, and interactability. Use this to understand the current UI layout before simulating input."",
+      ""inputSchema"": {
+        ""type"": ""object"",
+        ""properties"": {
+          ""filter_type"": { ""type"": ""string"",
+                           ""description"": ""Filter by component type: Button, Text, Image, InputField, Toggle, Slider, or 'all' (default)"" },
+          ""only_interactable"": { ""type"": ""boolean"", ""default"": false,
+                                  ""description"": ""If true, return only interactable elements"" }
+        }
+      }
+    },
+    {
+      ""name"": ""unity.simulate_input"",
+      ""description"": ""Simulate mouse or keyboard input in the Game View. Supports: click (left/right/middle), move, drag, key_down, key_up, key_press, scroll. Screen coordinates are in pixels from bottom-left. Use find_ui_elements or ui_raycast first to get target positions."",
+      ""inputSchema"": {
+        ""type"": ""object"",
+        ""properties"": {
+          ""action"":   { ""type"": ""string"",
+                        ""enum"": [""click"", ""right_click"", ""double_click"", ""move"", ""drag"", ""scroll"", ""key_press"", ""key_down"", ""key_up""],
+                        ""description"": ""Input action type"" },
+          ""x"":       { ""type"": ""number"", ""description"": ""Screen X position in pixels (0=left)"" },
+          ""y"":       { ""type"": ""number"", ""description"": ""Screen Y position in pixels (0=bottom)"" },
+          ""x2"":      { ""type"": ""number"", ""description"": ""Drag end X (for drag action)"" },
+          ""y2"":      { ""type"": ""number"", ""description"": ""Drag end Y (for drag action)"" },
+          ""key"":     { ""type"": ""string"", ""description"": ""Key name for keyboard actions (e.g. 'Space', 'Return', 'a', 'Escape')"" },
+          ""delta_x"": { ""type"": ""number"", ""description"": ""Horizontal scroll delta"" },
+          ""delta_y"": { ""type"": ""number"", ""description"": ""Vertical scroll delta"" }
+        },
+        ""required"": [""action""]
+      }
+    },
+    {
+      ""name"": ""unity.ui_raycast"",
+      ""description"": ""Cast a ray from a screen position and return all UI elements and 3D objects hit. Use this to identify what is at a specific screen coordinate before interacting with it."",
+      ""inputSchema"": {
+        ""type"": ""object"",
+        ""properties"": {
+          ""x"": { ""type"": ""number"", ""description"": ""Screen X in pixels"" },
+          ""y"": { ""type"": ""number"", ""description"": ""Screen Y in pixels"" },
+          ""max_distance"": { ""type"": ""number"", ""default"": 1000, ""description"": ""Max raycast distance for 3D objects"" }
+        },
+        ""required"": [""x"", ""y""]
+      }
     }
   ]
 }
@@ -517,7 +599,12 @@ public static class UnityMcpBridge
             "{\"name\":\"unity.query_scene\"}," +
             "{\"name\":\"unity.manage_asset\"}," +
             "{\"name\":\"unity.execute_menu_item\"}," +
-            "{\"name\":\"unity.read_console\"}" +
+            "{\"name\":\"unity.read_console\"}," +
+            "{\"name\":\"unity.capture_screenshot\"}," +
+            "{\"name\":\"unity.render_camera\"}," +
+            "{\"name\":\"unity.find_ui_elements\"}," +
+            "{\"name\":\"unity.simulate_input\"}," +
+            "{\"name\":\"unity.ui_raycast\"}" +
             "]}";
     }
 
@@ -549,6 +636,12 @@ public static class UnityMcpBridge
             case "unity.manage_asset":           return RunOnMainThread(() => ManageAsset(args));
             case "unity.execute_menu_item":      return RunOnMainThread(() => ExecuteMenuItem(args));
             case "unity.read_console":           return RunOnMainThread(() => ReadConsole(args));
+            // ── Visual Automation (v2.2) ──
+            case "unity.capture_screenshot":     return RunOnMainThread(() => CaptureScreenshot(args));
+            case "unity.render_camera":           return RunOnMainThread(() => RenderCamera(args));
+            case "unity.find_ui_elements":        return RunOnMainThread(() => FindUIElements(args));
+            case "unity.simulate_input":          return RunOnMainThread(() => SimulateInput(args));
+            case "unity.ui_raycast":              return RunOnMainThread(() => UIRaycast(args));
             default:
                 return $"{{\"ok\":false,\"error\":\"unknown_tool\",\"tool\":\"{Escape(name)}\"}}";
         }
@@ -1265,6 +1358,328 @@ public static class UnityMcpBridge
         }
         return cur;
     }
+
+    // ======== Visual Automation (v2.2) ========
+
+    private static string CaptureScreenshot(JObject a)
+    {
+        int superSize = Mathf.Clamp((int?)a["super_size"] ?? 1, 1, 4);
+
+        Camera cam = Camera.main ?? (Camera.allCameras.Length > 0 ? Camera.allCameras[0] : null);
+        if (cam == null)
+            return JsonConvert.SerializeObject(new { ok = false, error = "No active camera found in scene." });
+
+        // Game View 크기 가져오기
+        int w = Screen.width  * superSize;
+        int h = Screen.height * superSize;
+        if (w < 1) w = 512 * superSize;
+        if (h < 1) h = 512 * superSize;
+
+        string b64 = RenderCameraToBase64(cam, w, h);
+        return JsonConvert.SerializeObject(new { ok = true, width = w, height = h, format = "png", image_base64 = b64 });
+    }
+
+    private static string RenderCamera(JObject a)
+    {
+        string camName = (string)a["camera_name"] ?? "Main Camera";
+        int w = Mathf.Clamp((int?)a["width"]  ?? 512, 64, 2048);
+        int h = Mathf.Clamp((int?)a["height"] ?? 512, 64, 2048);
+
+        Camera cam = null;
+        foreach (var c in Camera.allCameras)
+            if (c.gameObject.name == camName) { cam = c; break; }
+        if (cam == null)
+        {
+            var names = System.Array.ConvertAll(Camera.allCameras, c => c.gameObject.name);
+            return JsonConvert.SerializeObject(new { ok = false, error = $"Camera '{camName}' not found.", available = names });
+        }
+
+        string b64 = RenderCameraToBase64(cam, w, h);
+        return JsonConvert.SerializeObject(new { ok = true, camera = camName, width = w, height = h, format = "png", image_base64 = b64 });
+    }
+
+    private static string FindUIElements(JObject a)
+    {
+        string filterType       = ((string)a["filter_type"] ?? "all").ToLower();
+        bool   onlyInteractable = (bool?)a["only_interactable"] ?? false;
+
+        var results = new List<object>();
+
+        var canvases = UnityEngine.Object.FindObjectsOfType<Canvas>();
+        foreach (var canvas in canvases)
+        {
+            if (!canvas.gameObject.activeInHierarchy) continue;
+
+            if (filterType == "all" || filterType == "button")
+                foreach (var btn in canvas.GetComponentsInChildren<Button>(false))
+                {
+                    if (onlyInteractable && !btn.interactable) continue;
+                    var rt = btn.GetComponent<RectTransform>();
+                    Vector2 sp = RectTransformToScreenPoint(rt, canvas);
+                    results.Add(new { name = btn.gameObject.name, type = "Button",
+                        interactable = btn.interactable,
+                        screen_x = Mathf.RoundToInt(sp.x), screen_y = Mathf.RoundToInt(sp.y),
+                        width = Mathf.RoundToInt(rt.rect.width), height = Mathf.RoundToInt(rt.rect.height),
+                        text = btn.GetComponentInChildren<Text>()?.text ?? "" });
+                }
+
+            if (filterType == "all" || filterType == "text")
+                foreach (var txt in canvas.GetComponentsInChildren<Text>(false))
+                {
+                    var rt = txt.GetComponent<RectTransform>();
+                    Vector2 sp = RectTransformToScreenPoint(rt, canvas);
+                    results.Add(new { name = txt.gameObject.name, type = "Text",
+                        interactable = false,
+                        screen_x = Mathf.RoundToInt(sp.x), screen_y = Mathf.RoundToInt(sp.y),
+                        width = Mathf.RoundToInt(rt.rect.width), height = Mathf.RoundToInt(rt.rect.height),
+                        text = txt.text });
+                }
+
+            if (filterType == "all" || filterType == "inputfield")
+                foreach (var inp in canvas.GetComponentsInChildren<InputField>(false))
+                {
+                    if (onlyInteractable && !inp.interactable) continue;
+                    var rt = inp.GetComponent<RectTransform>();
+                    Vector2 sp = RectTransformToScreenPoint(rt, canvas);
+                    results.Add(new { name = inp.gameObject.name, type = "InputField",
+                        interactable = inp.interactable,
+                        screen_x = Mathf.RoundToInt(sp.x), screen_y = Mathf.RoundToInt(sp.y),
+                        width = Mathf.RoundToInt(rt.rect.width), height = Mathf.RoundToInt(rt.rect.height),
+                        text = inp.text });
+                }
+
+            if (filterType == "all" || filterType == "toggle")
+                foreach (var tog in canvas.GetComponentsInChildren<Toggle>(false))
+                {
+                    if (onlyInteractable && !tog.interactable) continue;
+                    var rt = tog.GetComponent<RectTransform>();
+                    Vector2 sp = RectTransformToScreenPoint(rt, canvas);
+                    results.Add(new { name = tog.gameObject.name, type = "Toggle",
+                        interactable = tog.interactable,
+                        screen_x = Mathf.RoundToInt(sp.x), screen_y = Mathf.RoundToInt(sp.y),
+                        width = Mathf.RoundToInt(rt.rect.width), height = Mathf.RoundToInt(rt.rect.height),
+                        is_on = tog.isOn });
+                }
+
+            if (filterType == "all" || filterType == "slider")
+                foreach (var sld in canvas.GetComponentsInChildren<Slider>(false))
+                {
+                    if (onlyInteractable && !sld.interactable) continue;
+                    var rt = sld.GetComponent<RectTransform>();
+                    Vector2 sp = RectTransformToScreenPoint(rt, canvas);
+                    results.Add(new { name = sld.gameObject.name, type = "Slider",
+                        interactable = sld.interactable,
+                        screen_x = Mathf.RoundToInt(sp.x), screen_y = Mathf.RoundToInt(sp.y),
+                        width = Mathf.RoundToInt(rt.rect.width), height = Mathf.RoundToInt(rt.rect.height),
+                        value = sld.value, min = sld.minValue, max = sld.maxValue });
+                }
+        }
+
+        return JsonConvert.SerializeObject(new { ok = true, count = results.Count, elements = results });
+    }
+
+    private static string SimulateInput(JObject a)
+    {
+        string action = ((string)a["action"] ?? "").ToLower();
+        float x  = (float?)a["x"]  ?? 0f;
+        float y  = (float?)a["y"]  ?? 0f;
+        float x2 = (float?)a["x2"] ?? x;
+        float y2 = (float?)a["y2"] ?? y;
+        string key   = (string)a["key"] ?? "";
+        float deltaX = (float?)a["delta_x"] ?? 0f;
+        float deltaY = (float?)a["delta_y"] ?? 0f;
+
+        var screenPos = new Vector2(x, y);
+
+        switch (action)
+        {
+            case "click":
+            case "right_click":
+            case "double_click":
+            {
+                int btn = action == "right_click" ? 1 : 0;
+                var hits = RaycastUIAt(screenPos);
+                if (EventSystem.current != null && hits.Count > 0)
+                {
+                    var pd = new PointerEventData(EventSystem.current)
+                    {
+                        position   = screenPos,
+                        button     = (PointerEventData.InputButton)btn,
+                        clickCount = action == "double_click" ? 2 : 1,
+                        clickTime  = Time.unscaledTime
+                    };
+                    foreach (var hit in hits)
+                    {
+                        ExecuteEvents.Execute(hit.gameObject, pd, ExecuteEvents.pointerDownHandler);
+                        ExecuteEvents.Execute(hit.gameObject, pd, ExecuteEvents.pointerUpHandler);
+                        ExecuteEvents.Execute(hit.gameObject, pd, ExecuteEvents.pointerClickHandler);
+                    }
+                    return JsonConvert.SerializeObject(new { ok = true, action, x, y,
+                        hit_count = hits.Count,
+                        hit_objects = hits.ConvertAll(h => h.gameObject.name) });
+                }
+                return JsonConvert.SerializeObject(new { ok = true, action, x, y, hit_count = 0,
+                    note = "No UI element at position. Use ui_raycast to check what is there." });
+            }
+
+            case "move":
+            {
+                var hits = RaycastUIAt(screenPos);
+                if (EventSystem.current != null)
+                {
+                    var pd = new PointerEventData(EventSystem.current) { position = screenPos };
+                    foreach (var hit in hits)
+                        ExecuteEvents.Execute(hit.gameObject, pd, ExecuteEvents.pointerEnterHandler);
+                }
+                return JsonConvert.SerializeObject(new { ok = true, action, x, y });
+            }
+
+            case "drag":
+            {
+                var hitsStart = RaycastUIAt(screenPos);
+                if (EventSystem.current != null && hitsStart.Count > 0)
+                {
+                    var pd = new PointerEventData(EventSystem.current)
+                    { position = screenPos, pressPosition = screenPos,
+                      button = PointerEventData.InputButton.Left };
+                    foreach (var hit in hitsStart)
+                    {
+                        ExecuteEvents.Execute(hit.gameObject, pd, ExecuteEvents.beginDragHandler);
+                        pd.position = new Vector2(x2, y2);
+                        ExecuteEvents.Execute(hit.gameObject, pd, ExecuteEvents.dragHandler);
+                        ExecuteEvents.Execute(hit.gameObject, pd, ExecuteEvents.endDragHandler);
+                    }
+                }
+                return JsonConvert.SerializeObject(new { ok = true, action,
+                    from_x = x, from_y = y, to_x = x2, to_y = y2 });
+            }
+
+            case "scroll":
+            {
+                var hits = RaycastUIAt(screenPos);
+                if (EventSystem.current != null)
+                {
+                    var pd = new PointerEventData(EventSystem.current)
+                    { position = screenPos, scrollDelta = new Vector2(deltaX, deltaY) };
+                    foreach (var hit in hits)
+                        ExecuteEvents.Execute(hit.gameObject, pd, ExecuteEvents.scrollHandler);
+                }
+                return JsonConvert.SerializeObject(new { ok = true, action, x, y, delta_x = deltaX, delta_y = deltaY });
+            }
+
+            case "key_press":
+            case "key_down":
+            case "key_up":
+            {
+                if (string.IsNullOrEmpty(key))
+                    return JsonConvert.SerializeObject(new { ok = false, error = "'key' parameter required" });
+                if (!System.Enum.TryParse<KeyCode>(key, true, out KeyCode kc))
+                    return JsonConvert.SerializeObject(new { ok = false,
+                        error = $"Unknown key: '{key}'. Use Unity KeyCode names (Space, Return, A, Escape, F1, ...)" });
+                // 현재 선택된 UI 요소에 submit 이벤트 전달
+                var go = EventSystem.current?.currentSelectedGameObject;
+                if (go != null && action != "key_up")
+                    ExecuteEvents.Execute(go, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+                return JsonConvert.SerializeObject(new { ok = true, action, key, keycode = kc.ToString() });
+            }
+
+            default:
+                return JsonConvert.SerializeObject(new { ok = false, error = $"Unknown input action: '{action}'" });
+        }
+    }
+
+    private static string UIRaycast(JObject a)
+    {
+        float x       = (float?)a["x"] ?? 0f;
+        float y       = (float?)a["y"] ?? 0f;
+        float maxDist = (float?)a["max_distance"] ?? 1000f;
+        var screenPos = new Vector2(x, y);
+
+        var results = new List<object>();
+
+        // 1. UI Raycast
+        foreach (var hit in RaycastUIAt(screenPos))
+            results.Add(new {
+                type = "UI",
+                name = hit.gameObject.name,
+                path = GetHierarchyPath(hit.gameObject),
+                depth = hit.depth,
+                components = System.Array.ConvertAll(
+                    hit.gameObject.GetComponents<Component>(), c => c.GetType().Name)
+            });
+
+        // 2. 3D Physics Raycast
+        Camera cam = Camera.main ?? (Camera.allCameras.Length > 0 ? Camera.allCameras[0] : null);
+        if (cam != null)
+        {
+            Ray ray = cam.ScreenPointToRay(new Vector3(x, y, 0));
+            var hits3d = Physics.RaycastAll(ray, maxDist);
+            System.Array.Sort(hits3d, (a2, b2) => a2.distance.CompareTo(b2.distance));
+            foreach (var hit in hits3d)
+                results.Add(new {
+                    type = "3D",
+                    name = hit.collider.gameObject.name,
+                    path = GetHierarchyPath(hit.collider.gameObject),
+                    distance = Mathf.Round(hit.distance * 100f) / 100f,
+                    hit_point = new { x = hit.point.x, y = hit.point.y, z = hit.point.z },
+                    components = System.Array.ConvertAll(
+                        hit.collider.gameObject.GetComponents<Component>(), c => c.GetType().Name)
+                });
+        }
+
+        return JsonConvert.SerializeObject(new { ok = true, screen_x = x, screen_y = y,
+            hit_count = results.Count, hits = results });
+    }
+
+    // ---- Visual Automation Helpers ----
+
+    private static string RenderCameraToBase64(Camera cam, int w, int h)
+    {
+        var rt  = new RenderTexture(w, h, 24, RenderTextureFormat.ARGB32);
+        var tex = new Texture2D(w, h, TextureFormat.RGB24, false);
+        var prevTarget = cam.targetTexture;
+        var prevActive = RenderTexture.active;
+        try
+        {
+            cam.targetTexture = rt;
+            cam.Render();
+            RenderTexture.active = rt;
+            tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+            tex.Apply();
+        }
+        finally
+        {
+            cam.targetTexture = prevTarget;
+            RenderTexture.active = prevActive;
+            UnityEngine.Object.DestroyImmediate(rt);
+        }
+        byte[] png = tex.EncodeToPNG();
+        UnityEngine.Object.DestroyImmediate(tex);
+        return System.Convert.ToBase64String(png);
+    }
+
+    private static List<RaycastResult> RaycastUIAt(Vector2 screenPos)
+    {
+        if (EventSystem.current == null) return new List<RaycastResult>();
+        var pd = new PointerEventData(EventSystem.current) { position = screenPos };
+        var results = new List<RaycastResult>();
+        EventSystem.current.RaycastAll(pd, results);
+        return results;
+    }
+
+    private static Vector2 RectTransformToScreenPoint(RectTransform rt, Canvas canvas)
+    {
+        if (canvas.renderMode == RenderMode.ScreenSpaceOverlay)
+        {
+            Vector3[] corners = new Vector3[4];
+            rt.GetWorldCorners(corners);
+            return new Vector2((corners[0].x + corners[2].x) / 2f,
+                               (corners[0].y + corners[2].y) / 2f);
+        }
+        Camera cam = canvas.worldCamera ?? Camera.main;
+        if (cam == null) return Vector2.zero;
+        return cam.WorldToScreenPoint(rt.TransformPoint(rt.rect.center));
+    }
 }
 
 // ======== Settings Window ========
@@ -1277,7 +1692,7 @@ public class UnityMcpBridgeSettingsWindow : EditorWindow
 
     public static void ShowWindow()
     {
-        var win = GetWindow<UnityMcpBridgeSettingsWindow>("Unity MCP Bridge v2.1");
+        var win = GetWindow<UnityMcpBridgeSettingsWindow>("Unity MCP Bridge v2.2");
         win.minSize = new Vector2(560, 300);
         win.Show();
     }
