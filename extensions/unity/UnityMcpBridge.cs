@@ -50,6 +50,9 @@ public static class UnityMcpBridge
     private static volatile bool _running;
     private static readonly object _lock = new object();
 
+    /// <summary>True if the HTTP server is currently accepting requests.</summary>
+    public static bool IsRunning => _running;
+
     // ======== Static Constructor (runs on every domain reload) ========
 
     static UnityMcpBridge()
@@ -64,7 +67,16 @@ public static class UnityMcpBridge
         AssemblyReloadEvents.afterAssemblyReload  += OnAfterAssemblyReload;
 
         if (AutoStart)
+        {
             StartServer();
+        }
+        else
+        {
+            // Remind the user to start the server manually
+            Debug.Log("[UnityMcpBridge] v2.1 loaded. Server is NOT running.\n" +
+                      "  ▶  To start: Multi-MCP  →  Unity Bridge  →  Start\n" +
+                      "  ▶  To auto-start: Multi-MCP  →  Unity Bridge  →  Settings  →  enable Auto Start");
+        }
     }
 
     private static void OnBeforeAssemblyReload()
@@ -116,7 +128,10 @@ public static class UnityMcpBridge
         // Kick off the first async accept — no dedicated thread needed
         BeginAccept();
 
-        Debug.Log($"[UnityMcpBridge] v2.1 started — POST http://127.0.0.1:{Port}/mcp");
+        Debug.Log($"[UnityMcpBridge] v2.1 started.\n" +
+                  $"  MCP endpoint : POST http://127.0.0.1:{Port}/mcp\n" +
+                  $"  Health check : GET  http://127.0.0.1:{Port}/health\n" +
+                  $"  Register in Multi-MCP GUI: transport=http  endpoint=http://127.0.0.1:{Port}/mcp");
     }
 
     [MenuItem("Multi-MCP/Unity Bridge/Stop")]
@@ -1276,38 +1291,83 @@ public class UnityMcpBridgeSettingsWindow : EditorWindow
 
     private void OnGUI()
     {
+        // ── Title + live status ──────────────────────────────────────────
         GUILayout.Label("Unity MCP Bridge v2.1 Settings", EditorStyles.boldLabel);
         GUILayout.Space(4);
 
+        bool running = UnityMcpBridge.IsRunning;
+        var statusStyle = new GUIStyle(EditorStyles.boldLabel);
+        statusStyle.normal.textColor = running ? new Color(0.2f, 0.8f, 0.2f) : new Color(0.9f, 0.3f, 0.3f);
+        GUILayout.Label(running
+            ? $"● Server RUNNING  on port {_port}  (http://127.0.0.1:{_port}/mcp)"
+            : "● Server STOPPED  — click [Start Server] below",
+            statusStyle);
+
+        GUILayout.Space(8);
+
+        // ── Settings fields ──────────────────────────────────────────────
         _port      = EditorGUILayout.IntField ("Port (default: 23457)", _port);
         _token     = EditorGUILayout.TextField("Auth Token (optional)", _token);
         _autoStart = EditorGUILayout.Toggle   ("Auto Start on Editor Load", _autoStart);
 
         GUILayout.Space(8);
 
-        if (GUILayout.Button("Save Settings"))
+        // ── Buttons ──────────────────────────────────────────────────────
+        GUILayout.BeginHorizontal();
+
+        if (!running)
+        {
+            var startStyle = new GUIStyle(GUI.skin.button);
+            startStyle.normal.textColor  = Color.white;
+            startStyle.fontStyle         = FontStyle.Bold;
+            if (GUILayout.Button("▶  Start Server", startStyle, GUILayout.Height(28)))
+            {
+                // Apply settings first, then start
+                EditorPrefs.SetInt   ("MultiMCP.Unity.Port",      _port);
+                EditorPrefs.SetString("MultiMCP.Unity.Token",     _token);
+                EditorPrefs.SetBool  ("MultiMCP.Unity.AutoStart", _autoStart);
+                UnityMcpBridge.StartServer();
+            }
+        }
+        else
+        {
+            if (GUILayout.Button("■  Stop Server", GUILayout.Height(28)))
+                UnityMcpBridge.StopServer();
+        }
+
+        if (GUILayout.Button("Save Settings", GUILayout.Height(28)))
         {
             EditorPrefs.SetInt   ("MultiMCP.Unity.Port",      _port);
             EditorPrefs.SetString("MultiMCP.Unity.Token",     _token);
             EditorPrefs.SetBool  ("MultiMCP.Unity.AutoStart", _autoStart);
-            Debug.Log("[UnityMcpBridge] Settings saved. Restart server to apply.");
+            Debug.Log("[UnityMcpBridge] Settings saved.");
         }
 
-        GUILayout.Space(8);
-        GUILayout.BeginHorizontal();
-        if (GUILayout.Button("Start Server"))  UnityMcpBridge.StartServer();
-        if (GUILayout.Button("Stop Server"))   UnityMcpBridge.StopServer();
-        if (GUILayout.Button("Status"))        UnityMcpBridge.PrintStatus();
+        if (GUILayout.Button("Status", GUILayout.Height(28)))
+            UnityMcpBridge.PrintStatus();
+
         GUILayout.EndHorizontal();
 
         GUILayout.Space(10);
-        EditorGUILayout.HelpBox(
-            $"MCP Endpoint:  POST http://127.0.0.1:{_port}/mcp\n" +
-            $"Health Check:  GET  http://127.0.0.1:{_port}/health\n" +
-            $"Legacy List:   GET  http://127.0.0.1:{_port}/tools/list\n\n" +
-            "Register in Multi-MCP GUI:\n" +
-            $"  Transport: http   Endpoint: http://127.0.0.1:{_port}/mcp\n\n" +
-            "v2.1 fixes: Thread Abort, Domain Reload, async I/O",
-            MessageType.Info);
+
+        // ── Help box ─────────────────────────────────────────────────────
+        string helpText = running
+            ? $"✓ Server is running.\n\n" +
+              $"MCP Endpoint : POST http://127.0.0.1:{_port}/mcp\n" +
+              $"Health Check : GET  http://127.0.0.1:{_port}/health\n\n" +
+              $"Register in Multi-MCP GUI:\n" +
+              $"  Transport: http\n" +
+              $"  Endpoint : http://127.0.0.1:{_port}/mcp"
+            : "⚠  Server is NOT running.\n\n" +
+              "  1. (Optional) Change port above.\n" +
+              "  2. Click  ▶ Start Server  above.\n" +
+              "  3. Enable 'Auto Start' to start automatically on next Editor load.\n\n" +
+              "If Start fails, check the Unity Console for the error message.";
+
+        EditorGUILayout.HelpBox(helpText,
+            running ? MessageType.Info : MessageType.Warning);
+
+        // Repaint every frame so the status label updates immediately
+        Repaint();
     }
 }
