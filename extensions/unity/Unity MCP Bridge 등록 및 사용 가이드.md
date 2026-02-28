@@ -18,7 +18,7 @@ com.unity.nuget.newtonsoft-json
 
 ### 2-2. 스크립트 배치
 
-`UnityMcpBridge_v2.cs` 파일을 Unity 프로젝트의 `Assets/Editor/` 폴더에 복사합니다. Unity가 자동으로 컴파일합니다.
+`UnityMcpBridge.cs` 파일을 Unity 프로젝트의 `Assets/Editor/` 폴더에 복사합니다. Unity가 자동으로 컴파일합니다.
 
 ### 2-3. 서버 시작
 
