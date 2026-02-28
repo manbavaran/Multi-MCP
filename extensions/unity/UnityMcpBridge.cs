@@ -1,23 +1,23 @@
-// Assets/Editor/UnityMcpBridge.cs  (v2 — AI Autonomous Loop Ready)
-// Multi-MCP compatible Unity Editor bridge (HTTP + MCP JSON-RPC over HTTP)
+// Assets/Editor/UnityMcpBridge.cs  (v2.1 — Thread-safe, Domain-Reload-safe)
+// Multi-MCP compatible Unity Editor bridge (HTTP + MCP JSON-RPC 2.0)
 //
-// CHANGES FROM v1:
-//  + unity.get_component_property  — read any serialized field/property on a component
-//  + unity.set_component_property  — write any serialized field/property on a component
-//  + unity.call_component_method   — invoke a public method on a component (with args)
-//  + unity.control_playmode        — enter/exit/pause/step play mode; set Time.timeScale
-//  + unity.query_scene             — structured snapshot of scene hierarchy (AI observation)
-//  + unity.manage_asset            — find/load/instantiate assets from the AssetDatabase
-//  + unity.send_event              — send a named event to a component via SendMessage
+// FIXES in v2.1:
+//  * ThreadAbortException handled gracefully — no more "Thread was being aborted" warnings
+//  * BeginGetContext (async I/O) replaces blocking GetContext — server thread never blocks
+//  * AssemblyReloadEvents: server auto-stops before domain reload, auto-restarts after
+//  * RunOnMainThread uses ManualResetEventSlim instead of Thread.Sleep polling
+//  * StopServer is idempotent and safe to call from any thread
 //
-// Existing tools (unchanged):
-//  - unity.manage_gameobject       (find/get/create/delete/set_active/set_transform)
-//  - unity.manage_scene            (list_open/save_active/open)
-//  - unity.manage_components       (list/add/remove)
-//  - unity.execute_menu_item       (execute Unity menu item)
-//  - unity.read_console            (tail Editor.log)
+// Tools (12):
+//  unity.manage_gameobject, unity.manage_scene, unity.manage_components,
+//  unity.get_component_property, unity.set_component_property,
+//  unity.call_component_method, unity.send_event, unity.control_playmode,
+//  unity.query_scene, unity.manage_asset, unity.execute_menu_item,
+//  unity.read_console
 //
 // MCP endpoint: POST /mcp  (JSON-RPC 2.0)
+// Health:       GET  /health
+// Browser info: GET  /mcp
 // Legacy:       GET  /tools/list  |  POST /tools/call
 //
 // Dependencies:
@@ -41,23 +41,48 @@ using Newtonsoft.Json.Linq;
 public static class UnityMcpBridge
 {
     // ======== Config ========
-    private static int Port = 23457;          // Different from Multi-MCP hub port (8765)
-    private static string AuthToken = "";     // Optional Bearer token
+    private static int Port = 23457;
+    private static string AuthToken = "";
     private static bool AutoStart = false;
 
     // ======== Server State ========
     private static HttpListener _listener;
-    private static Thread _thread;
     private static volatile bool _running;
+    private static readonly object _lock = new object();
+
+    // ======== Static Constructor (runs on every domain reload) ========
 
     static UnityMcpBridge()
     {
-        Port = EditorPrefs.GetInt("MultiMCP.Unity.Port", 23457);
-        AuthToken = EditorPrefs.GetString("MultiMCP.Unity.Token", "");
-        AutoStart = EditorPrefs.GetBool("MultiMCP.Unity.AutoStart", false);
+        Port      = EditorPrefs.GetInt   ("MultiMCP.Unity.Port",      23457);
+        AuthToken = EditorPrefs.GetString("MultiMCP.Unity.Token",     "");
+        AutoStart = EditorPrefs.GetBool  ("MultiMCP.Unity.AutoStart", false);
+
+        // Stop cleanly before the next domain reload
+        AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
+        // Optionally restart after reload
+        AssemblyReloadEvents.afterAssemblyReload  += OnAfterAssemblyReload;
 
         if (AutoStart)
             StartServer();
+    }
+
+    private static void OnBeforeAssemblyReload()
+    {
+        if (_running)
+        {
+            Debug.Log("[UnityMcpBridge] Domain reload detected — stopping server.");
+            StopServer();
+        }
+    }
+
+    private static void OnAfterAssemblyReload()
+    {
+        if (AutoStart && !_running)
+        {
+            Debug.Log("[UnityMcpBridge] Domain reload complete — restarting server.");
+            StartServer();
+        }
     }
 
     // ======== Menu Items ========
@@ -65,36 +90,46 @@ public static class UnityMcpBridge
     [MenuItem("Multi-MCP/Unity Bridge/Start")]
     public static void StartServer()
     {
-        if (_running) { Debug.Log("[UnityMcpBridge] Already running."); return; }
-
-        var prefix = $"http://127.0.0.1:{Port}/";
-        _listener = new HttpListener();
-        _listener.Prefixes.Add(prefix);
-
-        try { _listener.Start(); }
-        catch (Exception e)
+        lock (_lock)
         {
-            Debug.LogError($"[UnityMcpBridge] Failed to start: {e.Message}");
-            return;
+            if (_running)
+            {
+                Debug.Log("[UnityMcpBridge] Already running.");
+                return;
+            }
+
+            var prefix = $"http://127.0.0.1:{Port}/";
+            _listener = new HttpListener();
+            _listener.Prefixes.Add(prefix);
+
+            try { _listener.Start(); }
+            catch (Exception e)
+            {
+                Debug.LogError($"[UnityMcpBridge] Failed to start on port {Port}: {e.Message}");
+                _listener = null;
+                return;
+            }
+
+            _running = true;
         }
 
-        _running = true;
-        _thread = new Thread(ServerLoop) { IsBackground = true, Name = "UnityMcpBridge" };
-        _thread.Start();
+        // Kick off the first async accept — no dedicated thread needed
+        BeginAccept();
 
-        Debug.Log($"[UnityMcpBridge] v2 started at {prefix}");
-        Debug.Log($"[UnityMcpBridge] MCP endpoint: POST {prefix}mcp");
+        Debug.Log($"[UnityMcpBridge] v2.1 started — POST http://127.0.0.1:{Port}/mcp");
     }
 
     [MenuItem("Multi-MCP/Unity Bridge/Stop")]
     public static void StopServer()
     {
-        _running = false;
-        try { _listener?.Stop(); } catch { }
-        try { _listener?.Close(); } catch { }
-        _listener = null;
-        try { _thread?.Join(1000); } catch { }
-        _thread = null;
+        lock (_lock)
+        {
+            if (!_running) return;
+            _running = false;
+            try { _listener?.Stop(); }  catch { }
+            try { _listener?.Close(); } catch { }
+            _listener = null;
+        }
         Debug.Log("[UnityMcpBridge] Stopped.");
     }
 
@@ -104,36 +139,78 @@ public static class UnityMcpBridge
     [MenuItem("Multi-MCP/Unity Bridge/Status")]
     public static void PrintStatus()
     {
-        Debug.Log($"[UnityMcpBridge] Running={_running}  Port={Port}  Auth={(!string.IsNullOrEmpty(AuthToken) ? "enabled" : "disabled")}");
+        Debug.Log($"[UnityMcpBridge] Running={_running}  Port={Port}  " +
+                  $"Auth={(!string.IsNullOrEmpty(AuthToken) ? "enabled" : "disabled")}");
     }
 
-    // ======== Server Loop ========
+    // ======== Async Accept Loop (no blocking thread) ========
 
-    private static void ServerLoop()
+    private static void BeginAccept()
     {
-        while (_running && _listener != null && _listener.IsListening)
+        HttpListener listener;
+        lock (_lock) { listener = _listener; }
+        if (!_running || listener == null) return;
+
+        try
         {
-            HttpListenerContext ctx = null;
-            try
-            {
-                ctx = _listener.GetContext();
-                HandleRequest(ctx);
-            }
-            catch (Exception e)
-            {
-                if (_running)
-                    Debug.LogWarning($"[UnityMcpBridge] Request error: {e.Message}");
-            }
+            listener.BeginGetContext(OnContext, listener);
+        }
+        catch (ObjectDisposedException) { /* listener was closed */ }
+        catch (HttpListenerException) { /* listener was stopped */ }
+        catch (Exception e)
+        {
+            if (_running)
+                Debug.LogWarning($"[UnityMcpBridge] BeginGetContext error: {e.Message}");
         }
     }
+
+    private static void OnContext(IAsyncResult ar)
+    {
+        var listener = (HttpListener)ar.AsyncState;
+
+        // Re-arm immediately so the next request can be accepted in parallel
+        if (_running)
+            BeginAccept();
+
+        HttpListenerContext ctx = null;
+        try
+        {
+            ctx = listener.EndGetContext(ar);
+        }
+        catch (ObjectDisposedException) { return; }
+        catch (HttpListenerException) { return; }
+        catch (Exception e)
+        {
+            if (_running)
+                Debug.LogWarning($"[UnityMcpBridge] EndGetContext error: {e.Message}");
+            return;
+        }
+
+        try
+        {
+            HandleRequest(ctx);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[UnityMcpBridge] HandleRequest error: {e.Message}");
+            try
+            {
+                ctx.Response.StatusCode = 500;
+                ctx.Response.Close();
+            }
+            catch { }
+        }
+    }
+
+    // ======== Request Handler ========
 
     private static void HandleRequest(HttpListenerContext ctx)
     {
         var req = ctx.Request;
         var res = ctx.Response;
 
-        // CORS for local dev tools
-        res.Headers.Add("Access-Control-Allow-Origin", "http://localhost:8765");
+        // CORS
+        res.Headers.Add("Access-Control-Allow-Origin",  "http://localhost:8765");
         res.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
@@ -146,7 +223,7 @@ public static class UnityMcpBridge
 
         Debug.Log($"[UnityMcpBridge] {req.HttpMethod} {req.Url.AbsolutePath}");
 
-        // Auth check
+        // Auth
         if (!string.IsNullOrEmpty(AuthToken))
         {
             var auth = req.Headers["Authorization"] ?? "";
@@ -157,39 +234,43 @@ public static class UnityMcpBridge
             }
         }
 
-        // MCP JSON-RPC 2.0 — POST /mcp
-        if (req.HttpMethod == "POST" && req.Url.AbsolutePath == "/mcp")
+        var method = req.HttpMethod;
+        var path   = req.Url.AbsolutePath;
+
+        // ── MCP JSON-RPC 2.0 ─────────────────────────────────────────────
+        if (method == "POST" && path == "/mcp")
         {
             WriteJson(res, 200, HandleJsonRpc(ReadBody(req)));
             return;
         }
 
-        // Browser-friendly GET /mcp — explain that POST is required
-        if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/mcp")
+        // ── Browser-friendly GET /mcp ─────────────────────────────────────
+        if (method == "GET" && path == "/mcp")
         {
             WriteJson(res, 200,
-                $"{{\"status\":\"ok\",\"service\":\"unity-mcp-bridge\",\"version\":\"2\"," +
-                $"\"note\":\"This endpoint requires POST with JSON-RPC 2.0 body. Use Multi-MCP GUI to register: transport=http endpoint=http://127.0.0.1:{Port}/mcp\"," +
-                $"\"health\":\"GET http://127.0.0.1:{Port}/health\"," +
-                $"\"tools_list\":\"POST http://127.0.0.1:{Port}/mcp with body={{jsonrpc:2.0,method:tools/list,id:1,params:{{}}}}\"}}");
+                $"{{\"status\":\"ok\",\"service\":\"unity-mcp-bridge\",\"version\":\"2.1\"," +
+                $"\"note\":\"POST required for JSON-RPC 2.0\"," +
+                $"\"endpoint\":\"POST http://127.0.0.1:{Port}/mcp\"," +
+                $"\"health\":\"GET http://127.0.0.1:{Port}/health\"}}");
             return;
         }
 
-        // Health check (for Multi-MCP discovery)
-        if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/health")
+        // ── Health check ──────────────────────────────────────────────────
+        if (method == "GET" && path == "/health")
         {
-            WriteJson(res, 200, $"{{\"status\":\"ok\",\"service\":\"unity-mcp-bridge\",\"version\":\"2\",\"port\":{Port}}}");
+            WriteJson(res, 200,
+                $"{{\"status\":\"ok\",\"service\":\"unity-mcp-bridge\",\"version\":\"2.1\",\"port\":{Port}}}");
             return;
         }
 
-        // Legacy endpoints
-        if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/tools/list")
+        // ── Legacy endpoints ──────────────────────────────────────────────
+        if (method == "GET" && path == "/tools/list")
         {
             WriteJson(res, 200, ToolsListLegacy());
             return;
         }
 
-        if (req.HttpMethod == "POST" && req.Url.AbsolutePath == "/tools/call")
+        if (method == "POST" && path == "/tools/call")
         {
             WriteJson(res, 200, HandleLegacyToolCall(ReadBody(req)));
             return;
@@ -220,7 +301,7 @@ public static class UnityMcpBridge
 
         if (method == "tools/call")
         {
-            var p = (JObject)(req["params"] ?? new JObject());
+            var p    = (JObject)(req["params"] ?? new JObject());
             var name = (string)p["name"];
             var args = (JObject)(p["arguments"] ?? new JObject());
 
@@ -287,7 +368,7 @@ public static class UnityMcpBridge
     },
     {
       ""name"": ""unity.get_component_property"",
-      ""description"": ""Read a field or property value from a component on a GameObject. Supports public fields, serialized fields, and public properties. Use this to observe game state (HP, score, flags, etc.)"",
+      ""description"": ""Read a field or property value from a component on a GameObject. Use this to observe game state (HP, score, flags, etc.)"",
       ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
@@ -300,7 +381,7 @@ public static class UnityMcpBridge
     },
     {
       ""name"": ""unity.set_component_property"",
-      ""description"": ""Write a value to a field or property on a component. Use to modify game state (HP, score, speed, flags, etc.)"",
+      ""description"": ""Write a value to a field or property on a component. Use to modify game state."",
       ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
@@ -314,54 +395,54 @@ public static class UnityMcpBridge
     },
     {
       ""name"": ""unity.call_component_method"",
-      ""description"": ""Invoke a public method on a component. Use to trigger game actions (Attack, OpenDoor, AddItem, StartQuest, etc.)"",
+      ""description"": ""Invoke a public method on a component. Use to trigger game actions (Attack, OpenDoor, AddItem, etc.)"",
       ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""path"":      { ""type"": ""string"" },
           ""component"": { ""type"": ""string"" },
           ""method"":    { ""type"": ""string"", ""description"": ""Method name (e.g. Attack, Heal, AddItem)"" },
-          ""args"":      { ""type"": ""array"", ""description"": ""Positional arguments (string/number/boolean)"", ""items"": {} }
+          ""args"":      { ""type"": ""array"", ""description"": ""Positional arguments"", ""items"": {} }
         },
         ""required"": [""path"",""component"",""method""]
       }
     },
     {
       ""name"": ""unity.send_event"",
-      ""description"": ""Send a named message to a component via SendMessage (no return value). Useful for triggering event-driven behaviours."",
+      ""description"": ""Send a named message to a component via SendMessage. Useful for event-driven behaviours."",
       ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
           ""path"":    { ""type"": ""string"" },
           ""message"": { ""type"": ""string"", ""description"": ""Method name to broadcast (e.g. OnPlayerDied)"" },
-          ""arg"":     { ""description"": ""Optional single argument (string/number/boolean)"" }
+          ""arg"":     { ""description"": ""Optional single argument"" }
         },
         ""required"": [""path"",""message""]
       }
     },
     {
       ""name"": ""unity.control_playmode"",
-      ""description"": ""Control Unity Editor play mode and time. Use to start/stop/pause the game, advance frames, or change time scale for simulation."",
+      ""description"": ""Control Unity Editor play mode and time scale."",
       ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
-          ""action"":     { ""type"": ""string"", ""enum"": [""enter"",""exit"",""pause"",""resume"",""step"",""get_state"",""set_timescale""] },
-          ""timescale"":  { ""type"": ""number"", ""minimum"": 0, ""maximum"": 100, ""description"": ""Time.timeScale value (1=normal, 2=double speed, 0=freeze)"" }
+          ""action"":    { ""type"": ""string"", ""enum"": [""enter"",""exit"",""pause"",""resume"",""step"",""get_state"",""set_timescale""] },
+          ""timescale"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 100 }
         },
         ""required"": [""action""]
       }
     },
     {
       ""name"": ""unity.query_scene"",
-      ""description"": ""Return a structured snapshot of the active scene hierarchy. Use as an observation step before planning actions. Can filter by tag, layer, or component type."",
+      ""description"": ""Return a structured snapshot of the active scene hierarchy. Use as an observation step before planning actions."",
       ""inputSchema"": {
         ""type"": ""object"",
         ""properties"": {
-          ""filter_tag"":       { ""type"": ""string"", ""description"": ""Only include GameObjects with this tag (e.g. Player, Enemy)"" },
-          ""filter_component"": { ""type"": ""string"", ""description"": ""Only include GameObjects that have this component type"" },
-          ""filter_name"":      { ""type"": ""string"", ""description"": ""Substring match on GameObject name"" },
-          ""max_depth"":        { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 10, ""description"": ""Max hierarchy depth to traverse (default 5)"" },
-          ""include_inactive"": { ""type"": ""boolean"", ""description"": ""Include inactive GameObjects (default false)"" }
+          ""filter_tag"":       { ""type"": ""string"" },
+          ""filter_component"": { ""type"": ""string"" },
+          ""filter_name"":      { ""type"": ""string"" },
+          ""max_depth"":        { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 10 },
+          ""include_inactive"": { ""type"": ""boolean"" }
         }
       }
     },
@@ -372,8 +453,8 @@ public static class UnityMcpBridge
         ""type"": ""object"",
         ""properties"": {
           ""action"":      { ""type"": ""string"", ""enum"": [""find"",""instantiate""] },
-          ""filter"":      { ""type"": ""string"", ""description"": ""Asset search filter (e.g. 't:Prefab Enemy')"" },
-          ""asset_path"":  { ""type"": ""string"", ""description"": ""Asset path for instantiate (e.g. Assets/Prefabs/Enemy.prefab)"" },
+          ""filter"":      { ""type"": ""string"" },
+          ""asset_path"":  { ""type"": ""string"" },
           ""position"":    { ""type"": ""array"", ""items"": {""type"":""number""}, ""minItems"":3, ""maxItems"":3 },
           ""parent_path"": { ""type"": ""string"" }
         },
@@ -396,7 +477,7 @@ public static class UnityMcpBridge
         ""type"": ""object"",
         ""properties"": {
           ""max_lines"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 2000 },
-          ""filter"":    { ""type"": ""string"", ""description"": ""Substring filter on log lines"" }
+          ""filter"":    { ""type"": ""string"" }
         }
       }
     }
@@ -458,7 +539,7 @@ public static class UnityMcpBridge
         }
     }
 
-    // ======== Tool Implementations (Original) ========
+    // ======== Tool Implementations ========
 
     private static string ManageGameObject(JObject a)
     {
@@ -469,20 +550,10 @@ public static class UnityMcpBridge
             string query = (string)a["query"] ?? "";
             var roots = SceneManager.GetActiveScene().GetRootGameObjects();
             var sb = new StringBuilder();
-            sb.Append("{\"ok\":true,\"result\":{\"matches\":[");
+            sb.Append("{\"ok\":true,\"result\":{\"objects\":[");
             bool first = true;
-            foreach (var r in roots)
-            {
-                foreach (var t in r.GetComponentsInChildren<Transform>(true))
-                {
-                    if (string.IsNullOrEmpty(query) || t.name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        if (!first) sb.Append(",");
-                        sb.Append($"\"{Escape(GetHierarchyPath(t.gameObject))}\"");
-                        first = false;
-                    }
-                }
-            }
+            foreach (var root in roots)
+                FindGameObjects(root, query, sb, ref first);
             sb.Append("]}}");
             return sb.ToString();
         }
@@ -494,21 +565,20 @@ public static class UnityMcpBridge
             var go = FindByHierarchyPath(path);
             if (go == null) return "{\"ok\":false,\"error\":\"not_found\"}";
             var t = go.transform;
-            return "{\"ok\":true,\"result\":{"
-                + $"\"path\":\"{Escape(GetHierarchyPath(go))}\","
-                + $"\"active\":{(go.activeSelf ? "true" : "false")},"
-                + $"\"tag\":\"{Escape(go.tag)}\","
-                + $"\"layer\":{go.layer},"
-                + $"\"position\":[{t.position.x},{t.position.y},{t.position.z}],"
-                + $"\"rotation\":[{t.eulerAngles.x},{t.eulerAngles.y},{t.eulerAngles.z}],"
-                + $"\"scale\":[{t.localScale.x},{t.localScale.y},{t.localScale.z}]"
-                + "}}";
+            return "{\"ok\":true,\"result\":{" +
+                $"\"path\":\"{Escape(GetHierarchyPath(go))}\"," +
+                $"\"name\":\"{Escape(go.name)}\"," +
+                $"\"active\":{(go.activeSelf ? "true" : "false")}," +
+                $"\"position\":[{t.position.x:F3},{t.position.y:F3},{t.position.z:F3}]," +
+                $"\"rotation\":[{t.eulerAngles.x:F3},{t.eulerAngles.y:F3},{t.eulerAngles.z:F3}]," +
+                $"\"scale\":[{t.localScale.x:F3},{t.localScale.y:F3},{t.localScale.z:F3}]" +
+                "}}";
         }
 
         if (action == "create")
         {
             string name = (string)a["name"] ?? "NewGameObject";
-            string parentPath = (string)a["parent_path"];
+            string parentPath = (string)a["parent_path"] ?? "";
             GameObject go = new GameObject(name);
             if (!string.IsNullOrEmpty(parentPath))
             {
@@ -564,6 +634,19 @@ public static class UnityMcpBridge
         }
 
         return "{\"ok\":false,\"error\":\"unknown_action\"}";
+    }
+
+    private static void FindGameObjects(GameObject go, string query, StringBuilder sb, ref bool first)
+    {
+        if (string.IsNullOrEmpty(query) ||
+            go.name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            if (!first) sb.Append(",");
+            first = false;
+            sb.Append($"{{\"path\":\"{Escape(GetHierarchyPath(go))}\",\"name\":\"{Escape(go.name)}\",\"active\":{(go.activeSelf ? "true" : "false")}}}");
+        }
+        for (int i = 0; i < go.transform.childCount; i++)
+            FindGameObjects(go.transform.GetChild(i).gameObject, query, sb, ref first);
     }
 
     private static string ManageScene(JObject a)
@@ -666,7 +749,7 @@ public static class UnityMcpBridge
 
         try
         {
-            var lines = TailLines(logPath, maxLines * 3); // read more, then filter
+            var lines = TailLines(logPath, maxLines * 3);
             if (!string.IsNullOrEmpty(filter))
             {
                 var filtered = new List<string>();
@@ -700,12 +783,6 @@ public static class UnityMcpBridge
         }
     }
 
-    // ======== NEW Tool Implementations ========
-
-    /// <summary>
-    /// Read a field or property from a component.
-    /// Supports: public fields, [SerializeField] fields, public properties.
-    /// </summary>
     private static string GetComponentProperty(JObject a)
     {
         string path = (string)a["path"];
@@ -724,7 +801,6 @@ public static class UnityMcpBridge
         var comp = go.GetComponent(compType);
         if (comp == null) return "{\"ok\":false,\"error\":\"component_not_on_gameobject\"}";
 
-        // Try field first (public + non-public serialized)
         var field = compType.GetField(propName,
             BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
         if (field != null)
@@ -733,9 +809,7 @@ public static class UnityMcpBridge
             return $"{{\"ok\":true,\"result\":{{\"value\":{SerializeValue(val)},\"type\":\"{Escape(field.FieldType.Name)}\"}}}}";
         }
 
-        // Try property
-        var prop = compType.GetProperty(propName,
-            BindingFlags.Public | BindingFlags.Instance);
+        var prop = compType.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance);
         if (prop != null && prop.CanRead)
         {
             var val = prop.GetValue(comp);
@@ -745,9 +819,6 @@ public static class UnityMcpBridge
         return $"{{\"ok\":false,\"error\":\"member_not_found\",\"member\":\"{Escape(propName)}\"}}";
     }
 
-    /// <summary>
-    /// Write a value to a field or property on a component.
-    /// </summary>
     private static string SetComponentProperty(JObject a)
     {
         string path = (string)a["path"];
@@ -770,54 +841,47 @@ public static class UnityMcpBridge
 
         Undo.RecordObject(comp, $"Set {compName}.{propName}");
 
-        // Try field
         var field = compType.GetField(propName,
             BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
         if (field != null)
         {
             try
             {
-                var converted = ConvertJToken(value, field.FieldType);
-                field.SetValue(comp, converted);
+                field.SetValue(comp, ConvertJToken(value, field.FieldType));
                 EditorUtility.SetDirty(comp);
+                EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
                 return "{\"ok\":true,\"result\":{\"updated\":true}}";
             }
             catch (Exception e)
             {
-                return $"{{\"ok\":false,\"error\":\"conversion_failed\",\"message\":\"{Escape(e.Message)}\"}}";
+                return $"{{\"ok\":false,\"error\":\"set_failed\",\"message\":\"{Escape(e.Message)}\"}}";
             }
         }
 
-        // Try property
-        var prop = compType.GetProperty(propName,
-            BindingFlags.Public | BindingFlags.Instance);
+        var prop = compType.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance);
         if (prop != null && prop.CanWrite)
         {
             try
             {
-                var converted = ConvertJToken(value, prop.PropertyType);
-                prop.SetValue(comp, converted);
+                prop.SetValue(comp, ConvertJToken(value, prop.PropertyType));
                 EditorUtility.SetDirty(comp);
+                EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
                 return "{\"ok\":true,\"result\":{\"updated\":true}}";
             }
             catch (Exception e)
             {
-                return $"{{\"ok\":false,\"error\":\"conversion_failed\",\"message\":\"{Escape(e.Message)}\"}}";
+                return $"{{\"ok\":false,\"error\":\"set_failed\",\"message\":\"{Escape(e.Message)}\"}}";
             }
         }
 
         return $"{{\"ok\":false,\"error\":\"member_not_found_or_readonly\",\"member\":\"{Escape(propName)}\"}}";
     }
 
-    /// <summary>
-    /// Invoke a public method on a component.
-    /// </summary>
     private static string CallComponentMethod(JObject a)
     {
         string path = (string)a["path"];
         string compName = (string)a["component"];
         string methodName = (string)a["method"];
-        var argsToken = a["args"] as JArray;
 
         if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(compName) || string.IsNullOrEmpty(methodName))
             return "{\"ok\":false,\"error\":\"missing_required_args\"}";
@@ -831,18 +895,25 @@ public static class UnityMcpBridge
         var comp = go.GetComponent(compType);
         if (comp == null) return "{\"ok\":false,\"error\":\"component_not_on_gameobject\"}";
 
-        // Find method (public, instance) — try overloads
+        var argsToken = a["args"] as JArray;
+        object[] methodArgs = null;
+
+        // Find matching method overload
         var methods = compType.GetMethods(BindingFlags.Public | BindingFlags.Instance);
         MethodInfo target = null;
         foreach (var m in methods)
         {
             if (m.Name != methodName) continue;
             var mParams = m.GetParameters();
-            int argCount = argsToken?.Count ?? 0;
-            if (mParams.Length == argCount) { target = m; break; }
-            // Accept zero-arg call even if method has optional params
-            if (argCount == 0 && mParams.Length > 0 &&
-                Array.TrueForAll(mParams, p => p.IsOptional)) { target = m; break; }
+            if (argsToken == null && mParams.Length == 0) { target = m; break; }
+            if (argsToken != null && mParams.Length == argsToken.Count)
+            {
+                target = m;
+                methodArgs = new object[mParams.Length];
+                for (int i = 0; i < mParams.Length; i++)
+                    methodArgs[i] = ConvertJToken(argsToken[i], mParams[i].ParameterType);
+                break;
+            }
         }
 
         if (target == null)
@@ -850,19 +921,9 @@ public static class UnityMcpBridge
 
         try
         {
-            var mParams = target.GetParameters();
-            object[] callArgs = new object[mParams.Length];
-            for (int i = 0; i < mParams.Length; i++)
-            {
-                if (argsToken != null && i < argsToken.Count)
-                    callArgs[i] = ConvertJToken(argsToken[i], mParams[i].ParameterType);
-                else if (mParams[i].IsOptional)
-                    callArgs[i] = mParams[i].DefaultValue;
-            }
-
-            var returnVal = target.Invoke(comp, callArgs);
-            string returnJson = returnVal != null ? SerializeValue(returnVal) : "null";
-            return $"{{\"ok\":true,\"result\":{{\"return\":{returnJson}}}}}";
+            var ret = target.Invoke(comp, methodArgs);
+            string retJson = ret == null ? "null" : SerializeValue(ret);
+            return $"{{\"ok\":true,\"result\":{{\"return\":{retJson}}}}}";
         }
         catch (Exception e)
         {
@@ -870,14 +931,10 @@ public static class UnityMcpBridge
         }
     }
 
-    /// <summary>
-    /// Send a Unity message to a component via SendMessage.
-    /// </summary>
     private static string SendEvent(JObject a)
     {
         string path = (string)a["path"];
         string message = (string)a["message"];
-        var arg = a["arg"];
 
         if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(message))
             return "{\"ok\":false,\"error\":\"missing_required_args\"}";
@@ -885,24 +942,15 @@ public static class UnityMcpBridge
         var go = FindByHierarchyPath(path);
         if (go == null) return "{\"ok\":false,\"error\":\"gameobject_not_found\"}";
 
-        try
-        {
-            if (arg != null)
-                go.SendMessage(message, ConvertJToken(arg, typeof(object)), SendMessageOptions.DontRequireReceiver);
-            else
-                go.SendMessage(message, SendMessageOptions.DontRequireReceiver);
+        var arg = a["arg"];
+        if (arg == null || arg.Type == JTokenType.Null)
+            go.SendMessage(message, SendMessageOptions.DontRequireReceiver);
+        else
+            go.SendMessage(message, ConvertJToken(arg, typeof(object)), SendMessageOptions.DontRequireReceiver);
 
-            return "{\"ok\":true,\"result\":{\"sent\":true}}";
-        }
-        catch (Exception e)
-        {
-            return $"{{\"ok\":false,\"error\":\"send_failed\",\"message\":\"{Escape(e.Message)}\"}}";
-        }
+        return "{\"ok\":true,\"result\":{\"sent\":true}}";
     }
 
-    /// <summary>
-    /// Control Unity Editor play mode and time scale.
-    /// </summary>
     private static string ControlPlayMode(JObject a)
     {
         var action = (string)a["action"];
@@ -915,60 +963,27 @@ public static class UnityMcpBridge
                 + $"\"timescale\":{Time.timeScale}"
                 + "}}";
         }
-
-        if (action == "enter")
-        {
-            EditorApplication.isPlaying = true;
-            return "{\"ok\":true,\"result\":{\"action\":\"enter_play_mode\"}}";
-        }
-
-        if (action == "exit")
-        {
-            EditorApplication.isPlaying = false;
-            return "{\"ok\":true,\"result\":{\"action\":\"exit_play_mode\"}}";
-        }
-
-        if (action == "pause")
-        {
-            EditorApplication.isPaused = true;
-            return "{\"ok\":true,\"result\":{\"action\":\"paused\"}}";
-        }
-
-        if (action == "resume")
-        {
-            EditorApplication.isPaused = false;
-            return "{\"ok\":true,\"result\":{\"action\":\"resumed\"}}";
-        }
-
-        if (action == "step")
-        {
-            EditorApplication.Step();
-            return "{\"ok\":true,\"result\":{\"action\":\"stepped_one_frame\"}}";
-        }
-
+        if (action == "enter")  { EditorApplication.isPlaying = true;  return "{\"ok\":true,\"result\":{\"action\":\"enter_play_mode\"}}"; }
+        if (action == "exit")   { EditorApplication.isPlaying = false; return "{\"ok\":true,\"result\":{\"action\":\"exit_play_mode\"}}"; }
+        if (action == "pause")  { EditorApplication.isPaused = true;   return "{\"ok\":true,\"result\":{\"action\":\"paused\"}}"; }
+        if (action == "resume") { EditorApplication.isPaused = false;  return "{\"ok\":true,\"result\":{\"action\":\"resumed\"}}"; }
+        if (action == "step")   { EditorApplication.Step();            return "{\"ok\":true,\"result\":{\"action\":\"stepped_one_frame\"}}"; }
         if (action == "set_timescale")
         {
-            float ts = (float?)a["timescale"] ?? 1f;
-            ts = Mathf.Clamp(ts, 0f, 100f);
+            float ts = Mathf.Clamp((float?)a["timescale"] ?? 1f, 0f, 100f);
             Time.timeScale = ts;
             return $"{{\"ok\":true,\"result\":{{\"timescale\":{ts}}}}}";
         }
-
         return "{\"ok\":false,\"error\":\"unknown_action\"}";
     }
 
-    /// <summary>
-    /// Return a structured snapshot of the scene hierarchy for AI observation.
-    /// </summary>
     private static string QueryScene(JObject a)
     {
-        string filterTag = (string)a["filter_tag"] ?? "";
+        string filterTag  = (string)a["filter_tag"]  ?? "";
         string filterComp = (string)a["filter_component"] ?? "";
         string filterName = (string)a["filter_name"] ?? "";
-        int maxDepth = (int?)a["max_depth"] ?? 5;
+        int maxDepth = Mathf.Clamp((int?)a["max_depth"] ?? 5, 1, 10);
         bool includeInactive = (bool?)a["include_inactive"] ?? false;
-
-        maxDepth = Mathf.Clamp(maxDepth, 1, 10);
 
         Type filterCompType = string.IsNullOrEmpty(filterComp) ? null : ResolveType(filterComp);
 
@@ -982,9 +997,7 @@ public static class UnityMcpBridge
 
         bool first = true;
         foreach (var root in roots)
-        {
             AppendGameObjectJson(sb, root, 0, maxDepth, filterTag, filterCompType, filterName, includeInactive, ref first);
-        }
 
         sb.Append("]}}");
         return sb.ToString();
@@ -997,8 +1010,8 @@ public static class UnityMcpBridge
     {
         if (!includeInactive && !go.activeInHierarchy) return;
 
-        bool tagMatch = string.IsNullOrEmpty(filterTag) || go.CompareTag(filterTag);
-        bool compMatch = filterCompType == null || go.GetComponent(filterCompType) != null;
+        bool tagMatch  = string.IsNullOrEmpty(filterTag)  || go.CompareTag(filterTag);
+        bool compMatch = filterCompType == null            || go.GetComponent(filterCompType) != null;
         bool nameMatch = string.IsNullOrEmpty(filterName) ||
                          go.name.IndexOf(filterName, StringComparison.OrdinalIgnoreCase) >= 0;
 
@@ -1006,7 +1019,6 @@ public static class UnityMcpBridge
         {
             if (!first) sb.Append(",");
             first = false;
-
             var t = go.transform;
             sb.Append("{");
             sb.Append($"\"path\":\"{Escape(GetHierarchyPath(go))}\",");
@@ -1016,8 +1028,6 @@ public static class UnityMcpBridge
             sb.Append($"\"layer\":{go.layer},");
             sb.Append($"\"position\":[{t.position.x:F3},{t.position.y:F3},{t.position.z:F3}],");
             sb.Append($"\"rotation\":[{t.eulerAngles.x:F3},{t.eulerAngles.y:F3},{t.eulerAngles.z:F3}],");
-
-            // Component list (type names only)
             var comps = go.GetComponents<Component>();
             sb.Append("\"components\":[");
             for (int i = 0; i < comps.Length; i++)
@@ -1031,18 +1041,11 @@ public static class UnityMcpBridge
         }
 
         if (depth < maxDepth - 1)
-        {
             for (int i = 0; i < go.transform.childCount; i++)
-            {
                 AppendGameObjectJson(sb, go.transform.GetChild(i).gameObject,
                     depth + 1, maxDepth, filterTag, filterCompType, filterName, includeInactive, ref first);
-            }
-        }
     }
 
-    /// <summary>
-    /// Find assets in the AssetDatabase or instantiate prefabs.
-    /// </summary>
     private static string ManageAsset(JObject a)
     {
         var action = (string)a["action"];
@@ -1053,7 +1056,7 @@ public static class UnityMcpBridge
             var guids = UnityEditor.AssetDatabase.FindAssets(filter);
             var sb = new StringBuilder();
             sb.Append("{\"ok\":true,\"result\":{\"assets\":[");
-            int limit = Mathf.Min(guids.Length, 50); // cap results
+            int limit = Mathf.Min(guids.Length, 50);
             for (int i = 0; i < limit; i++)
             {
                 string assetPath = UnityEditor.AssetDatabase.GUIDToAssetPath(guids[i]);
@@ -1075,11 +1078,9 @@ public static class UnityMcpBridge
             var instance = (GameObject)UnityEditor.PrefabUtility.InstantiatePrefab(prefab);
             if (instance == null) return "{\"ok\":false,\"error\":\"instantiate_failed\"}";
 
-            // Set position if provided
             if (a["position"] is JArray p && p.Count >= 3)
                 instance.transform.position = new Vector3((float)p[0], (float)p[1], (float)p[2]);
 
-            // Set parent if provided
             string parentPath = (string)a["parent_path"];
             if (!string.IsNullOrEmpty(parentPath))
             {
@@ -1089,35 +1090,34 @@ public static class UnityMcpBridge
 
             Undo.RegisterCreatedObjectUndo(instance, "Instantiate Prefab");
             EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
-
             return $"{{\"ok\":true,\"result\":{{\"path\":\"{Escape(GetHierarchyPath(instance))}\"}}}}";
         }
 
         return "{\"ok\":false,\"error\":\"unknown_action\"}";
     }
 
-    // ======== Main Thread Execution Helper ========
+    // ======== Main Thread Execution Helper (Thread-safe) ========
 
     private static string RunOnMainThread(Func<string> fn)
     {
+        // ManualResetEventSlim is safe across domain reloads and does not
+        // block the thread in a spin loop — the OS scheduler handles waiting.
+        var mre    = new ManualResetEventSlim(false);
         string result = null;
         Exception err = null;
-        bool done = false;
 
         EditorApplication.delayCall += () =>
         {
-            try { result = fn(); }
+            try   { result = fn(); }
             catch (Exception e) { err = e; }
-            finally { done = true; }
+            finally { mre.Set(); }
         };
 
-        var start = DateTime.UtcNow;
-        while (!done)
-        {
-            Thread.Sleep(10);
-            if ((DateTime.UtcNow - start).TotalSeconds > 10)
-                return "{\"ok\":false,\"error\":\"timeout_main_thread\"}";
-        }
+        // Wait up to 10 s; if the editor is in the middle of a domain reload
+        // the delayCall may never fire — we time out gracefully.
+        bool signalled = mre.Wait(TimeSpan.FromSeconds(10));
+        if (!signalled)
+            return "{\"ok\":false,\"error\":\"timeout_main_thread\"}";
 
         if (err != null)
             return $"{{\"ok\":false,\"error\":\"exception\",\"message\":\"{Escape(err.Message)}\"}}";
@@ -1142,18 +1142,17 @@ public static class UnityMcpBridge
         if (val is Color c) return $"[{c.r},{c.g},{c.b},{c.a}]";
         if (val is Quaternion q) return $"[{q.x},{q.y},{q.z},{q.w}]";
         if (val is Enum) return $"\"{Escape(val.ToString())}\"";
-        // Fallback: JSON serialize
         try { return JsonConvert.SerializeObject(val); }
         catch { return $"\"{Escape(val.ToString())}\""; }
     }
 
     private static object ConvertJToken(JToken token, Type targetType)
     {
-        if (targetType == typeof(string)) return (string)token;
-        if (targetType == typeof(int) || targetType == typeof(int?)) return (int)token;
-        if (targetType == typeof(float) || targetType == typeof(float?)) return (float)token;
-        if (targetType == typeof(double) || targetType == typeof(double?)) return (double)token;
-        if (targetType == typeof(bool) || targetType == typeof(bool?)) return (bool)token;
+        if (targetType == typeof(string))  return (string)token;
+        if (targetType == typeof(int)   || targetType == typeof(int?))    return (int)token;
+        if (targetType == typeof(float) || targetType == typeof(float?))  return (float)token;
+        if (targetType == typeof(double)|| targetType == typeof(double?)) return (double)token;
+        if (targetType == typeof(bool)  || targetType == typeof(bool?))   return (bool)token;
         if (targetType == typeof(Vector3) && token is JArray arr3 && arr3.Count >= 3)
             return new Vector3((float)arr3[0], (float)arr3[1], (float)arr3[2]);
         if (targetType == typeof(Vector2) && token is JArray arr2 && arr2.Count >= 2)
@@ -1164,9 +1163,9 @@ public static class UnityMcpBridge
             return Enum.Parse(targetType, (string)token, ignoreCase: true);
         if (targetType == typeof(object))
         {
-            if (token.Type == JTokenType.String) return (string)token;
+            if (token.Type == JTokenType.String)  return (string)token;
             if (token.Type == JTokenType.Integer) return (int)token;
-            if (token.Type == JTokenType.Float) return (float)token;
+            if (token.Type == JTokenType.Float)   return (float)token;
             if (token.Type == JTokenType.Boolean) return (bool)token;
             return token.ToString();
         }
@@ -1179,7 +1178,7 @@ public static class UnityMcpBridge
     {
         var all = File.ReadAllLines(path);
         int start = Mathf.Max(0, all.Length - maxLines);
-        int len = all.Length - start;
+        int len   = all.Length - start;
         var slice = new string[len];
         Array.Copy(all, start, slice, 0, len);
         return slice;
@@ -1209,10 +1208,10 @@ public static class UnityMcpBridge
     private static void WriteJson(HttpListenerResponse res, int code, string json)
     {
         var bytes = Encoding.UTF8.GetBytes(json);
-        res.StatusCode = code;
-        res.ContentType = "application/json";
-        res.ContentEncoding = Encoding.UTF8;
-        res.ContentLength64 = bytes.Length;
+        res.StatusCode       = code;
+        res.ContentType      = "application/json";
+        res.ContentEncoding  = Encoding.UTF8;
+        res.ContentLength64  = bytes.Length;
         try { using (var output = res.OutputStream) output.Write(bytes, 0, bytes.Length); }
         catch { }
     }
@@ -1257,48 +1256,48 @@ public static class UnityMcpBridge
 
 public class UnityMcpBridgeSettingsWindow : EditorWindow
 {
-    private int _port;
+    private int    _port;
     private string _token;
-    private bool _autoStart;
+    private bool   _autoStart;
 
     public static void ShowWindow()
     {
-        var win = GetWindow<UnityMcpBridgeSettingsWindow>("Unity MCP Bridge v2");
-        win.minSize = new Vector2(560, 280);
+        var win = GetWindow<UnityMcpBridgeSettingsWindow>("Unity MCP Bridge v2.1");
+        win.minSize = new Vector2(560, 300);
         win.Show();
     }
 
     private void OnEnable()
     {
-        _port = EditorPrefs.GetInt("MultiMCP.Unity.Port", 23457);
-        _token = EditorPrefs.GetString("MultiMCP.Unity.Token", "");
-        _autoStart = EditorPrefs.GetBool("MultiMCP.Unity.AutoStart", false);
+        _port      = EditorPrefs.GetInt   ("MultiMCP.Unity.Port",      23457);
+        _token     = EditorPrefs.GetString("MultiMCP.Unity.Token",     "");
+        _autoStart = EditorPrefs.GetBool  ("MultiMCP.Unity.AutoStart", false);
     }
 
     private void OnGUI()
     {
-        GUILayout.Label("Unity MCP Bridge v2 Settings", EditorStyles.boldLabel);
+        GUILayout.Label("Unity MCP Bridge v2.1 Settings", EditorStyles.boldLabel);
         GUILayout.Space(4);
 
-        _port = EditorGUILayout.IntField("Port (default: 23457)", _port);
-        _token = EditorGUILayout.TextField("Auth Token (optional)", _token);
-        _autoStart = EditorGUILayout.Toggle("Auto Start on Editor Load", _autoStart);
+        _port      = EditorGUILayout.IntField ("Port (default: 23457)", _port);
+        _token     = EditorGUILayout.TextField("Auth Token (optional)", _token);
+        _autoStart = EditorGUILayout.Toggle   ("Auto Start on Editor Load", _autoStart);
 
         GUILayout.Space(8);
 
         if (GUILayout.Button("Save Settings"))
         {
-            EditorPrefs.SetInt("MultiMCP.Unity.Port", _port);
-            EditorPrefs.SetString("MultiMCP.Unity.Token", _token);
-            EditorPrefs.SetBool("MultiMCP.Unity.AutoStart", _autoStart);
-            Debug.Log("[UnityMcpBridge] Settings saved. Restart server to apply changes.");
+            EditorPrefs.SetInt   ("MultiMCP.Unity.Port",      _port);
+            EditorPrefs.SetString("MultiMCP.Unity.Token",     _token);
+            EditorPrefs.SetBool  ("MultiMCP.Unity.AutoStart", _autoStart);
+            Debug.Log("[UnityMcpBridge] Settings saved. Restart server to apply.");
         }
 
         GUILayout.Space(8);
         GUILayout.BeginHorizontal();
-        if (GUILayout.Button("Start Server")) UnityMcpBridge.StartServer();
-        if (GUILayout.Button("Stop Server")) UnityMcpBridge.StopServer();
-        if (GUILayout.Button("Status")) UnityMcpBridge.PrintStatus();
+        if (GUILayout.Button("Start Server"))  UnityMcpBridge.StartServer();
+        if (GUILayout.Button("Stop Server"))   UnityMcpBridge.StopServer();
+        if (GUILayout.Button("Status"))        UnityMcpBridge.PrintStatus();
         GUILayout.EndHorizontal();
 
         GUILayout.Space(10);
@@ -1307,7 +1306,8 @@ public class UnityMcpBridgeSettingsWindow : EditorWindow
             $"Health Check:  GET  http://127.0.0.1:{_port}/health\n" +
             $"Legacy List:   GET  http://127.0.0.1:{_port}/tools/list\n\n" +
             "Register in Multi-MCP GUI:\n" +
-            $"  Transport: http   Endpoint: http://127.0.0.1:{_port}/mcp",
+            $"  Transport: http   Endpoint: http://127.0.0.1:{_port}/mcp\n\n" +
+            "v2.1 fixes: Thread Abort, Domain Reload, async I/O",
             MessageType.Info);
     }
 }

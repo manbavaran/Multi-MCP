@@ -1697,13 +1697,25 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
 // ============================================================
 function showToast(msg, type = 'success') {
   const el = document.getElementById('toast');
-  const colors = { success: '#2ecc71', error: '#e74c3c', info: '#6c63ff' };
-  el.style.cssText = `display:block;position:fixed;bottom:24px;right:24px;z-index:999;min-width:280px;
-    background:var(--surface);border:1px solid ${colors[type]||colors.success};
-    color:${colors[type]||colors.success};padding:12px 16px;border-radius:8px;
-    font-size:13px;box-shadow:0 4px 20px rgba(0,0,0,0.5);`;
-  el.textContent = msg;
-  setTimeout(() => { el.style.display = 'none'; }, 3500);
+  const colors = { success: '#2ecc71', error: '#e74c3c', info: '#6c63ff', warning: '#f39c12' };
+  const color  = colors[type] || colors.success;
+  // error/warning: 12s, success: 5s, info: 6s
+  const duration = (type === 'error' || type === 'warning') ? 12000 : (type === 'info' ? 6000 : 5000);
+
+  el.style.cssText = `display:block;position:fixed;bottom:24px;right:24px;z-index:9999;min-width:320px;max-width:480px;
+    background:var(--surface);border:2px solid ${color};
+    color:${color};padding:14px 40px 14px 16px;border-radius:8px;
+    font-size:13px;line-height:1.5;box-shadow:0 4px 24px rgba(0,0,0,0.6);word-break:break-word;`;
+
+  // Build inner HTML with close button
+  el.innerHTML = `<span style="display:block;margin-right:4px">${msg.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>
+    <button onclick="document.getElementById('toast').style.display='none'"
+      style="position:absolute;top:8px;right:10px;background:none;border:none;color:${color};
+             font-size:16px;cursor:pointer;line-height:1;padding:0" title="닫기">&times;</button>`;
+
+  // Clear previous timer
+  if (el._toastTimer) clearTimeout(el._toastTimer);
+  el._toastTimer = setTimeout(() => { el.style.display = 'none'; }, duration);
 }
 
 // ============================================================
