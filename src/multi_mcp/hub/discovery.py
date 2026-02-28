@@ -137,42 +137,84 @@ class DiscoveryService:
         if not server.endpoint:
             raise ValueError("HTTP transport requires 'endpoint' to be set")
 
-        try:
-            import httpx  # type: ignore[import]
-        except ImportError:
-            raise RuntimeError("httpx not installed. Run: pip install httpx")
-
         # Normalise: strip trailing slash so we control the exact URL
         base = server.endpoint.rstrip("/")
         payload = {"jsonrpc": "2.0", "method": "tools/list", "id": 1, "params": {}}
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # Strategy 1: POST directly to the endpoint (Unity bridge: POST /mcp)
-            try:
-                resp = await client.post(base, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if "result" in data or "tools" in data:
-                        return _parse_tools_list_response(data)
-            except Exception:  # noqa: BLE001
-                pass
+        # Try httpx first (async, preferred); fall back to stdlib urllib (sync in thread)
+        try:
+            import httpx  # type: ignore[import]
+            _has_httpx = True
+        except ImportError:
+            _has_httpx = False
 
-            # Strategy 2: POST with trailing slash
-            try:
-                resp = await client.post(f"{base}/", json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if "result" in data or "tools" in data:
-                        return _parse_tools_list_response(data)
-            except Exception:  # noqa: BLE001
-                pass
+        if _has_httpx:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Strategy 1: POST directly to the endpoint (Unity bridge: POST /mcp)
+                try:
+                    resp = await client.post(base, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if "result" in data or "tools" in data:
+                            return _parse_tools_list_response(data)
+                except Exception:  # noqa: BLE001
+                    pass
 
-            # Strategy 3: REST-style GET /tools/list
-            # Derive base host from endpoint (strip the last path segment)
+                # Strategy 2: POST with trailing slash
+                try:
+                    resp = await client.post(f"{base}/", json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if "result" in data or "tools" in data:
+                            return _parse_tools_list_response(data)
+                except Exception:  # noqa: BLE001
+                    pass
+
+                # Strategy 3: REST-style GET /tools/list
+                host_base = base.rsplit("/", 1)[0] if "/" in base.split("://", 1)[-1] else base
+                resp = await client.get(f"{host_base}/tools/list")
+                resp.raise_for_status()
+                data = resp.json()
+                return _parse_tools_list_response(data)
+        else:
+            # ---- urllib fallback (no httpx installed) ----
+            import asyncio
+            import urllib.request
+            import urllib.error
+
+            def _urllib_post(url: str) -> dict | None:
+                body = json.dumps(payload).encode()
+                req = urllib.request.Request(
+                    url, data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=10) as r:
+                        if r.status == 200:
+                            return json.loads(r.read().decode())
+                except Exception:  # noqa: BLE001
+                    return None
+                return None
+
+            loop = asyncio.get_event_loop()
+            # Strategy 1
+            data = await loop.run_in_executor(None, _urllib_post, base)
+            if data and ("result" in data or "tools" in data):
+                return _parse_tools_list_response(data)
+            # Strategy 2
+            data = await loop.run_in_executor(None, _urllib_post, f"{base}/")
+            if data and ("result" in data or "tools" in data):
+                return _parse_tools_list_response(data)
+            # Strategy 3: GET /tools/list
             host_base = base.rsplit("/", 1)[0] if "/" in base.split("://", 1)[-1] else base
-            resp = await client.get(f"{host_base}/tools/list")
-            resp.raise_for_status()
-            data = resp.json()
+
+            def _urllib_get(url: str) -> dict:
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return json.loads(r.read().decode())
+
+            data = await loop.run_in_executor(None, _urllib_get, f"{host_base}/tools/list")
             return _parse_tools_list_response(data)
 
     async def _fetch_stdio(self, server: SubServerConfig) -> list[DiscoveredTool]:
